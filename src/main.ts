@@ -5,11 +5,13 @@ import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   POSE_IDS,
   PoseClassifier,
+  evaluatePose,
   extractFeatures,
-  poseSimilarity,
   wristCrossingOffset,
   wristGap,
   type Classification,
+  type PoseConditionInfo,
+  type PoseEvaluation,
   type PoseFeatures,
   type PoseId,
 } from './classifier';
@@ -23,6 +25,7 @@ import {
   type CalibrationData,
 } from './calibration';
 import { detectFramingWarning } from './framing';
+import { AttemptRecorder } from './attempts';
 import {
   RecognitionTest,
   TRIAL_TIMEOUT_MS,
@@ -32,7 +35,14 @@ import {
 
 const BASE_URL = import.meta.env.BASE_URL;
 const WASM_URL = `${BASE_URL}wasm`;
-const MODEL_URL = `${BASE_URL}models/pose_landmarker_lite.task`;
+const MODEL_STORAGE_KEY = 'wpr.model.v1';
+
+type ModelId = 'lite' | 'full';
+
+const MODEL_URLS: Record<ModelId, string> = {
+  lite: `${BASE_URL}models/pose_landmarker_lite.task`,
+  full: `${BASE_URL}models/pose_landmarker_full.task`,
+};
 
 const KEY_LANDMARKS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
 const MIN_VISIBLE_KEY_LANDMARKS = 6;
@@ -65,6 +75,7 @@ const startButton = requireElement<HTMLButtonElement>('#start');
 const retryButton = requireElement<HTMLButtonElement>('#retry');
 const gpuToggle = requireElement<HTMLInputElement>('#gpu-toggle');
 const resolutionControl = requireElement<HTMLFieldSetElement>('#resolution-control');
+const modelControl = requireElement<HTMLFieldSetElement>('#model-control');
 const fpsCurrent = requireElement<HTMLSpanElement>('#fps-current');
 const fpsAverage = requireElement<HTMLSpanElement>('#fps-average');
 const trackingStatus = requireElement<HTMLSpanElement>('#tracking-status');
@@ -79,6 +90,7 @@ const similarityValue = requireElement<HTMLSpanElement>('#similarity-value');
 const similarityBar = requireElement<HTMLDivElement>('#similarity-bar');
 const similarityFill = requireElement<HTMLDivElement>('#similarity-fill');
 const debugReadout = requireElement<HTMLParagraphElement>('#debug-readout');
+const conditionList = requireElement<HTMLDivElement>('#condition-list');
 const framingWarning = requireElement<HTMLParagraphElement>('#framing-warning');
 const poseHint = requireElement<HTMLParagraphElement>('#pose-hint');
 const calibrationBadge = requireElement<HTMLSpanElement>('#calibration-badge');
@@ -86,6 +98,9 @@ const calibrateButton = requireElement<HTMLButtonElement>('#calibrate');
 const resetCalibrationButton = requireElement<HTMLButtonElement>('#reset-calibration');
 const calibrationStatus = requireElement<HTMLParagraphElement>('#calibration-status');
 const calibrationFill = requireElement<HTMLDivElement>('#calibration-fill');
+const recordButton = requireElement<HTMLButtonElement>('#record-attempts');
+const downloadAttemptsButton = requireElement<HTMLButtonElement>('#download-attempts');
+const recordStatus = requireElement<HTMLParagraphElement>('#record-status');
 const targetButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>('.pose-button'),
 );
@@ -102,6 +117,7 @@ const ctx = require2dContext(canvas);
 
 const drawer = new SkeletonDrawer();
 const classifier = new PoseClassifier();
+const recorder = new AttemptRecorder();
 let calibrationData: CalibrationData | null = loadCalibration();
 let thresholds = thresholdsFromCalibration(calibrationData);
 classifier.thresholds = thresholds;
@@ -114,6 +130,16 @@ let state: TrackingState = 'idle';
 let starting = false;
 let cameraLive = false;
 let currentResolution: Resolution = { width: 640, height: 480 };
+
+interface ConditionRowElements {
+  row: HTMLDivElement;
+  value: HTMLSpanElement;
+  requirement: HTMLSpanElement;
+  status: HTMLSpanElement;
+}
+
+let conditionRowIds = '';
+let conditionRowElements: ConditionRowElements[] = [];
 
 for (const pose of POSE_IDS) {
   const row = document.querySelector<HTMLTableRowElement>(
@@ -141,14 +167,19 @@ function updateTrainingControls(): void {
   const running = state === 'running';
   const calibrating = calibrationSession !== null;
   const testActive = recognitionTest?.isActive ?? false;
+  const recording = recorder.isRecording;
 
-  calibrateButton.disabled = !running || calibrating || testActive;
-  resetCalibrationButton.disabled = !running || calibrating || testActive;
-  startTestButton.disabled = !running || calibrating || testActive;
+  calibrateButton.disabled = !running || calibrating || testActive || recording;
+  resetCalibrationButton.disabled =
+    !running || calibrating || testActive || recording;
+  startTestButton.disabled = !running || calibrating || testActive || recording;
   testTargetSelect.disabled = !running || calibrating || testActive;
   downloadButton.disabled = !recognitionTest?.getResults();
+  recordButton.disabled = !running || calibrating || testActive;
+  recordButton.textContent = recording ? 'Stop recording' : 'Record attempts';
+  downloadAttemptsButton.disabled = !recorder.hasAttempts();
   for (const button of targetButtons) {
-    button.disabled = !running || calibrating;
+    button.disabled = !running || calibrating || recording;
   }
 }
 
@@ -176,6 +207,38 @@ function applyResolutionToInputs(resolution: Resolution): void {
     `input[name="resolution"][value="${resolution.width}x${resolution.height}"]`,
   );
   if (input) input.checked = true;
+}
+
+function loadModelChoice(): ModelId {
+  try {
+    const stored = window.localStorage.getItem(MODEL_STORAGE_KEY);
+    if (stored === 'lite' || stored === 'full') return stored;
+  } catch {
+    // localStorage may be unavailable in hardened browser modes.
+  }
+  return window.innerWidth >= 900 ? 'full' : 'lite';
+}
+
+function readSelectedModel(): ModelId {
+  const selected = document.querySelector<HTMLInputElement>(
+    'input[name="model"]:checked',
+  );
+  return selected?.value === 'lite' ? 'lite' : 'full';
+}
+
+function applyModelToInputs(model: ModelId): void {
+  const input = document.querySelector<HTMLInputElement>(
+    `input[name="model"][value="${model}"]`,
+  );
+  if (input) input.checked = true;
+}
+
+function persistModel(model: ModelId): void {
+  try {
+    window.localStorage.setItem(MODEL_STORAGE_KEY, model);
+  } catch {
+    // Ignore storage failures; the in-memory selection still works.
+  }
 }
 
 /**
@@ -264,10 +327,58 @@ function formatSigned(value: number): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
 }
 
+function makeConditionSpan(className: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = className;
+  return span;
+}
+
+function renderConditionList(
+  conditions: PoseConditionInfo[] | null,
+): void {
+  if (!conditions || conditions.length === 0) {
+    conditionList.hidden = true;
+    conditionList.replaceChildren();
+    conditionRowIds = '';
+    conditionRowElements = [];
+    return;
+  }
+
+  const ids = conditions.map((condition) => condition.id).join('|');
+  if (ids !== conditionRowIds) {
+    conditionList.replaceChildren();
+    conditionRowElements = conditions.map((condition) => {
+      const row = document.createElement('div');
+      row.className = 'condition-row';
+      const name = makeConditionSpan('condition-name');
+      name.textContent = condition.name;
+      const value = makeConditionSpan('condition-value');
+      const requirement = makeConditionSpan('condition-requirement');
+      const status = makeConditionSpan('condition-status');
+      row.append(name, value, requirement, status);
+      conditionList.append(row);
+      return { row, value, requirement, status };
+    });
+    conditionRowIds = ids;
+  }
+
+  conditionList.hidden = false;
+  conditions.forEach((condition, index) => {
+    const elements = conditionRowElements[index];
+    if (!elements) return;
+    elements.value.textContent = condition.valueLabel;
+    elements.requirement.textContent = condition.requirement;
+    elements.status.textContent = condition.passed ? 'PASS' : 'FAIL';
+    elements.row.classList.toggle('pass', condition.passed);
+    elements.row.classList.toggle('fail', !condition.passed);
+  });
+}
+
 function updatePracticeUi(
   features: PoseFeatures | null,
   classification: Classification,
   warning: string | null,
+  evaluation: PoseEvaluation | null,
 ): void {
   currentPoseLabel.textContent = classification.label;
   currentPoseLabel.dataset.pose = classification.label;
@@ -290,7 +401,8 @@ function updatePracticeUi(
       'elbow L -- / R -- · wrist gap -- · cross L -- / R --';
   }
 
-  if (!features) {
+  if (!features || !evaluation) {
+    renderConditionList(null);
     similarityValue.textContent = '--%';
     setBarWidth(similarityFill, 0);
     similarityBar.setAttribute('aria-valuenow', '0');
@@ -305,10 +417,11 @@ function updatePracticeUi(
     return;
   }
 
-  const similarity = poseSimilarity(features, practiceTarget, thresholds);
+  const similarity = evaluation.similarity;
   similarityValue.textContent = `${similarity.score}%`;
   setBarWidth(similarityFill, similarity.score);
   similarityBar.setAttribute('aria-valuenow', String(similarity.score));
+  renderConditionList(evaluation.conditions);
 
   // Framing problems take precedence over the generic pose hint.
   if (warning) {
@@ -340,8 +453,31 @@ function handleFrame(frame: PoseFrame): void {
     frame.timestampMs,
   );
   const framingMessage = detectFramingWarning(landmarks);
+  const targetPose = recorder.recordingPose ?? practiceTarget;
+  const evaluation = features
+    ? evaluatePose(features, targetPose, thresholds)
+    : null;
 
-  updatePracticeUi(features, classification, framingMessage);
+  updatePracticeUi(features, classification, framingMessage, evaluation);
+
+  if (recorder.isRecording) {
+    if (features && evaluation) {
+      recorder.record({
+        timestampMs: frame.timestampMs,
+        features,
+        conditions: evaluation.conditions,
+        label: classification.label,
+        similarity: evaluation.similarity.score,
+        worldLandmarks: frame.worldLandmarks,
+      });
+      recordStatus.textContent =
+        `Recording ${recorder.recordingPose ?? practiceTarget} — ` +
+        `${recorder.frameCount} frames. Hold the pose up to 5 times, then press Stop.`;
+    } else {
+      recordStatus.textContent =
+        `Recording ${recorder.recordingPose ?? practiceTarget} — paused (no tracked pose).`;
+    }
+  }
 
   if (calibrationSession) {
     updateCalibration(features, frame.timestampMs);
@@ -377,7 +513,8 @@ function startCalibration(): void {
   if (
     state !== 'running' ||
     calibrationSession !== null ||
-    recognitionTest?.isActive
+    recognitionTest?.isActive ||
+    recorder.isRecording
   ) {
     return;
   }
@@ -436,7 +573,13 @@ function resetCalibration(): void {
 }
 
 function startRecognitionTest(): void {
-  if (state !== 'running' || calibrationSession !== null) return;
+  if (
+    state !== 'running' ||
+    calibrationSession !== null ||
+    recorder.isRecording
+  ) {
+    return;
+  }
 
   const target = testTargetSelect.value as TestTarget;
   recognitionTest = new RecognitionTest();
@@ -552,7 +695,60 @@ function downloadResults(): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function stopRecording(message: string): void {
+  if (!recorder.isRecording) return;
+  const session = recorder.stop();
+  if (session) {
+    const counts = POSE_IDS.map(
+      (pose) => `${pose} ${recorder.getStore().poses[pose]?.length ?? 0}`,
+    ).join(' · ');
+    recordStatus.textContent =
+      `Saved ${session.frames.length} frames for ${session.pose}. ` +
+      `Sessions: ${counts}. ${message}`;
+  } else {
+    recordStatus.textContent = message;
+  }
+  updateTrainingControls();
+}
+
+function toggleRecording(): void {
+  if (recorder.isRecording) {
+    stopRecording('Recording stopped.');
+    return;
+  }
+  if (
+    state !== 'running' ||
+    calibrationSession !== null ||
+    recognitionTest?.isActive
+  ) {
+    return;
+  }
+  recorder.start(practiceTarget, performance.now());
+  recordStatus.textContent =
+    `Recording ${practiceTarget}. Hold the pose up to 5 times (~1s each), then press Stop.`;
+  updateTrainingControls();
+}
+
+function downloadAttempts(): void {
+  if (!recorder.hasAttempts()) return;
+  const blob = new Blob([JSON.stringify(recorder.getStore(), null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  anchor.href = url;
+  anchor.download = `wpr-attempts-${stamp}.json`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function cancelActiveTraining(message: string): void {
+  if (recorder.isRecording) {
+    stopRecording('Recording stopped and saved.');
+  }
   if (calibrationSession) {
     calibrationSession.cancel();
     calibrationSession = null;
@@ -576,6 +772,7 @@ function handleFatal(error: unknown): void {
   retryButton.hidden = false;
   retryButton.disabled = false;
   resolutionControl.disabled = false;
+  modelControl.disabled = false;
   gpuToggle.disabled = false;
   showError(
     `Pose tracking stopped after repeated inference failures: ${errorMessage(error)}. ` +
@@ -617,6 +814,7 @@ async function startPipeline(): Promise<void> {
   startButton.disabled = true;
   startButton.textContent = 'Starting…';
   resolutionControl.disabled = true;
+  modelControl.disabled = true;
   gpuToggle.disabled = true;
   setState('loading');
   landmarkStatus.textContent = 'not detected';
@@ -638,11 +836,13 @@ async function startPipeline(): Promise<void> {
     created.onFatal = handleFatal;
     tracker = created;
 
+    const selectedModel = readSelectedModel();
+    persistModel(selectedModel);
     const requested: Delegate = gpuToggle.checked ? 'GPU' : 'CPU';
     const started = await created.start(
       video,
       WASM_URL,
-      MODEL_URL,
+      MODEL_URLS[selectedModel],
       requested,
     );
     delegateStatus.textContent = started.delegate;
@@ -676,6 +876,7 @@ async function startPipeline(): Promise<void> {
   } finally {
     starting = false;
     resolutionControl.disabled = false;
+    modelControl.disabled = false;
     gpuToggle.disabled = false;
     retryButton.disabled = false;
   }
@@ -699,6 +900,14 @@ function changeDelegate(): void {
   void startPipeline();
 }
 
+async function changeModel(): Promise<void> {
+  const selected = readSelectedModel();
+  persistModel(selected);
+  if (!cameraLive) return;
+  // Rebuild tracking with the newly selected model.
+  await startPipeline();
+}
+
 startButton.addEventListener('click', () => {
   void startPipeline();
 });
@@ -713,10 +922,16 @@ resolutionControl.addEventListener('change', () => {
 
 gpuToggle.addEventListener('change', changeDelegate);
 
+modelControl.addEventListener('change', () => {
+  void changeModel();
+});
+
 calibrateButton.addEventListener('click', startCalibration);
 resetCalibrationButton.addEventListener('click', resetCalibration);
 startTestButton.addEventListener('click', startRecognitionTest);
 downloadButton.addEventListener('click', downloadResults);
+recordButton.addEventListener('click', toggleRecording);
+downloadAttemptsButton.addEventListener('click', downloadAttempts);
 
 for (const button of targetButtons) {
   button.addEventListener('click', () => {
@@ -734,6 +949,14 @@ if (hasCalibration(calibrationData)) {
   calibrationStatus.textContent = 'Calibration loaded from this browser.';
 }
 
+if (recorder.hasAttempts()) {
+  const counts = POSE_IDS.map(
+    (pose) => `${pose} ${recorder.getStore().poses[pose]?.length ?? 0}`,
+  ).join(' · ');
+  recordStatus.textContent = `Saved attempts — ${counts}. Record more or download the JSON.`;
+}
+
 applyResolutionToInputs(currentResolution);
+applyModelToInputs(loadModelChoice());
 setState('idle');
 updateResultsTable();

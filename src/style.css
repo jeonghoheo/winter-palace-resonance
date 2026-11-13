@@ -336,6 +336,75 @@ fieldset label {
   font-variant-numeric: tabular-nums;
 }
 
+.condition-list {
+  display: grid;
+  gap: 2px;
+  margin-top: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.condition-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1.2fr) minmax(90px, 1fr) minmax(120px, 1.2fr) 54px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 7px;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  background: rgba(8, 16, 30, 0.55);
+  color: #b9c8e2;
+}
+
+.condition-row.pass {
+  border-left-color: #63d6a4;
+}
+
+.condition-row.fail {
+  border-left-color: #ff7b8a;
+}
+
+.condition-name {
+  color: #e8eefc;
+}
+
+.condition-value {
+  color: #cfe0ff;
+}
+
+.condition-requirement {
+  color: #8ea0c4;
+}
+
+.condition-status {
+  color: #8ea0c4;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.condition-row.pass .condition-status {
+  color: #9dffcf;
+}
+
+.condition-row.fail .condition-status {
+  color: #ff9e9e;
+}
+
+.recorder {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #22324d;
+}
+
+.recorder-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
 .framing-warning {
   display: inline-block;
   margin: 10px 0 0;
@@ -479,5 +548,11 @@ select {
   .results td {
     padding: 6px 4px;
     font-size: 12px;
+  }
+
+  .condition-row {
+    grid-template-columns: minmax(90px, 1.1fr) minmax(70px, 1fr) minmax(90px, 1.1fr) 46px;
+    gap: 5px;
+    font-size: 11px;
   }
 }

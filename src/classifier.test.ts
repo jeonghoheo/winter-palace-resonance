@@ -5,6 +5,7 @@ import {
   POSE_IDS,
   PoseClassifier,
   classifyPose,
+  evaluatePose,
   extractFeatures,
   jointAngle,
   matchesPose,
@@ -31,6 +32,7 @@ function makeFeatures(overrides: FeatureOverrides = {}): PoseFeatures {
     chinY: -0.4,
     midTorsoY: 0.75,
     hipY: 1.5,
+    wristVisibility: { left: 1, right: 1 },
     left: {
       shoulder: v(0.5, 0),
       elbow: v(0.5, 0.4),
@@ -285,6 +287,56 @@ describe('PoseClassifier stability', () => {
     expect(gamma.label).toBe('GAMMA');
     expect(gamma.recognized).toBe(false);
     expect(gamma.stableForMs).toBe(0);
+  });
+});
+
+describe('evaluatePose condition details', () => {
+  it('returns per-condition detail that matches the aggregate similarity', () => {
+    for (const pose of POSE_IDS) {
+      const evaluation = evaluatePose(poseFixtures[pose](), pose);
+      expect(evaluation.conditions.length).toBeGreaterThan(0);
+
+      for (const condition of evaluation.conditions) {
+        expect(condition.name.length).toBeGreaterThan(0);
+        expect(condition.requirement.length).toBeGreaterThan(0);
+        expect(condition.valueLabel.length).toBeGreaterThan(0);
+        expect(typeof condition.passed).toBe('boolean');
+        expect(condition.score).toBeGreaterThanOrEqual(0);
+        expect(condition.score).toBeLessThanOrEqual(1);
+        expect(condition.score).toBeCloseTo(1 - condition.distance, 6);
+        expect(condition.passed).toBe(true);
+      }
+
+      const meanScore =
+        evaluation.conditions.reduce((sum, condition) => sum + condition.score, 0) /
+        evaluation.conditions.length;
+      expect(evaluation.similarity.score).toBe(Math.round(meanScore * 100));
+      const worstScore = Math.min(
+        ...evaluation.conditions.map((condition) => condition.score),
+      );
+      expect(evaluation.similarity.worst.score).toBe(worstScore);
+    }
+  });
+
+  it('reports failing conditions for an unrelated pose', () => {
+    const armsDown = makeFeatures({
+      left: { wrist: v(0.6, 1.2), elbowAngle: 170 },
+      right: { wrist: v(-0.6, 1.2), elbowAngle: 170 },
+    });
+    const evaluation = evaluatePose(armsDown, 'BETA');
+    expect(evaluation.conditions.some((condition) => !condition.passed)).toBe(
+      true,
+    );
+    expect(evaluation.similarity.score).toBeLessThan(50);
+  });
+
+  it('includes the ALPHA wrist separation condition', () => {
+    const evaluation = evaluatePose(alphaFeatures(), 'ALPHA');
+    const gap = evaluation.conditions.find(
+      (condition) => condition.id === 'alpha-wrist-gap',
+    );
+    expect(gap?.passed).toBe(true);
+    expect(gap?.requirement).toContain('0.50');
   });
 });
 

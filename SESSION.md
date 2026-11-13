@@ -63,7 +63,7 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 ## Roadmap (context only — do not build ahead)
 
 1. Camera + pose tracking + FPS measurement — DONE (Block 1 + FIX, commits 2892279 / c137fa7). Measured on the user's MacBook Air M1 in Brave with a real camera: 5s-average FPS 60.2 at 640x480 and 58.4 at 1280x720; landmarks detected. Performance baseline confirmed — large headroom over the 25 FPS effects criterion.
-2. 4-pose classifier + personal calibration + recognition-rate test mode — code done (commit e85d758); first human playtest (2026-11-13): ALPHA works well, BETA too strict, DELTA misread as ALPHA, GAMMA unclear/hard, and the user suspects BETA/GAMMA failures are partly framing (arms leaving the narrow MacBook webcam frame). See Block 2 FIX below; full 20-trial measurement still pending.
+2. 4-pose classifier + personal calibration + recognition-rate test mode — code done (commit e85d758); Block 2 FIX done (commit 5f55997, tests 38/38). Second human playtest (2026-11-13): ALPHA works; BETA still hard AND the drawn skeleton itself warps/bends at T-pose (a landmark-quality problem, not a threshold problem); GAMMA similarity rarely passes ~40% (suspected: one or more conditions score near zero structurally); DELTA still fails. Next: Block 2 FIX 2 (measurement round — full model option + per-condition breakdown + attempt recorder with parallel 3D world-landmark angle capture; NO threshold changes until real attempt data exists). Full 20-trial measurement still pending. Recognition improvement ladder agreed with the user (2026-11-13): FIX 2 measurement -> Full model + 3D-landmark angles -> RTMPose only if still insufficient, and that decision waits until after the Block 3 fun gate.
 3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules, PLUS a tweak panel (sliders for overload rise time, pose hold time, similarity threshold, hitstop frames, shake gain, particle burst size; values persisted in localStorage; toggled with the T key; hidden by default and always hidden in the TV profile) (fun gate)
 4. First real Nightmare enemy + full HUD (per HUD rules) + art direction decision (style candidates are collected in the project notes; the user decides them in this block)
 5. Three enemy types + boss combo pattern
@@ -96,3 +96,34 @@ Required changes (src/classifier.ts unless noted):
 6. Keep calibration behavior unchanged (it adjusts enter thresholds within +/-20% of the NEW defaults). `npm run build` and `npm test` must pass, with the new/updated tests included.
 
 Log a "Block 2 FIX" entry in SESSION-LOG.md (English): the final constant values changed, test results, checklist, and a user-test note: stand far enough back that the whole T-pose fits inside the framing guide, then in practice mode try DELTA 5 times (ALPHA must not fire), BETA 5 times, GAMMA 5 times, and report how many of each were recognized.
+
+---
+
+## Block 2 FIX 2 — measurement round: full model + per-condition breakdown + attempt recorder (do this before Block 3)
+
+Second human playtest after Block 2 FIX (2026-11-13, real camera, real person):
+- ALPHA: works reasonably well now.
+- BETA: the DRAWN SKELETON ITSELF warps/bends strangely at T-pose. The landmarks are wrong before classification even runs — this is a tracking-quality problem (lite model, small person in frame at the distance the narrow webcam forces), NOT a threshold problem.
+- GAMMA: similarity rarely exceeds ~40% even when the user performs the pose as instructed. Suspicion: one or more GAMMA conditions score near zero structurally, capping the mean. Currently invisible — the similarity is a single opaque number.
+- DELTA: still fails. Unknown which condition fails (wrist gap? band? visibility when the wrists overlap in front of the chest?).
+
+Principle for this round: STOP tuning thresholds blind. This block changes NO classification thresholds. It adds measurement, so the next tuning round (FIX 3) is computed from the user's real attempt data.
+
+Required changes:
+1. Full model option (src/pose.ts or wherever the landmarker is created):
+   - Download pose_landmarker_full.task at setup time (official MediaPipe model storage: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task) and bundle it locally in public/ next to the lite model. Runtime stays fully local — no CDN, no network calls at runtime.
+   - Add a model toggle in the practice/test UI: Lite / Full. Switching rebuilds the landmarker (same lifecycle handling as the resolution switch). Persist the choice in localStorage. Default: Full on desktop-width viewports, Lite below that.
+   - The log entry must report: both model file sizes on disk, and headless FPS if measurable; the real-camera FPS and skeleton-stability judgement stay a user test (mark Not assessed).
+2. Per-condition breakdown (src/classifier.ts + practice UI):
+   - Refactor the classifier so evaluating a pose also returns per-condition detail: for each condition of the target pose — name, current measured value, enter requirement, pass/fail, and its 0-1 score contribution to similarity.
+   - In practice mode, under the similarity bar, show the selected target pose's conditions as a compact live list: condition name, current value vs requirement, pass (green) / fail (red). Update every frame. This list is a DEV/tuning aid — small text is fine here (the HUD size rules apply to gameplay HUD, not to this practice tool).
+   - Unit tests: per-condition detail is returned for all 4 poses and matches the aggregate similarity computation.
+3. Attempt recorder (practice mode):
+   - Flow: user selects a target pose, presses "Record attempts", performs the pose up to 5 times holding ~1s each, presses "Stop". While recording, capture per frame: timestamp, raw feature values (elbow angles L/R, wrist gap SW, crossing offsets L/R, wrist heights relative to shoulder line, per-wrist visibility), the target pose's per-condition pass/score values, classifier output label, and similarity.
+   - ALSO capture, per frame, the MediaPipe 3D world landmarks (meters) for nose, shoulders, elbows, wrists and hips, plus elbow angles L/R computed from those 3D coordinates. Classification keeps using the 2D features — the 3D values are recorded ONLY so the FIX 3 analysis can compare 2D vs 3D elbow-angle stability on the same real attempts (especially BETA holds) and decide whether classification should switch angle computation to 3D.
+   - Save recordings in localStorage keyed by pose, and provide a "Download attempts JSON" button exporting all recorded attempts (all poses) as one JSON file.
+   - Unit tests: recorder serializes frames to the documented JSON shape (including the 3D fields); recording start/stop state handling.
+4. NO threshold changes in this block. Calibration behavior unchanged. `npm run build` and `npm test` must pass.
+
+Log a "Block 2 FIX 2" entry in SESSION-LOG.md (English): files changed, model file sizes, build/test results, screenshot check (docs/screens/block-2-fix2-start.png), handover checklist, and this user-test note:
+- User test: (1) switch the model toggle to Full and do BETA — does the skeleton stop warping? Report the 5s-average FPS on Full too. (2) With the recorder: record 5 attempts each of DELTA, GAMMA, BETA (hold each ~1s, return to neutral between attempts). (3) Download the attempts JSON and attach it in the project chat. Thresholds for FIX 3 will be computed from that data, including the 2D-vs-3D elbow comparison.

@@ -110,3 +110,31 @@ Handover checklist (Block 2 FIX):
 9. Production screenshot check at 1280x720 — Built; path above.
 - Acceptance still requiring the user: stand far enough back that the whole T-pose fits inside the framing guide, then in practice mode try DELTA 5 times (confirm ALPHA does not fire), BETA 5 times, and GAMMA 5 times, and report how many of each were recognized. Also report whether the framing guide/warning helps with the MacBook webcam FOV.
 - Not yet played by a person
+
+## Block 2 FIX 2 — measurement round: full model, per-condition breakdown, attempt recorder (2026-11-13)
+- Built: a locally bundled Full pose model with a Lite/Full toggle, per-condition similarity breakdown in the practice UI, and an attempt recorder that stores 2D feature/condition data plus 3D world-landmark data for later analysis.
+- No classification thresholds were changed in this block. `DEFAULT_THRESHOLDS`, `matchesPose`, calibration behavior, and the matching logic are unchanged; only evaluation/reporting, model selection, and recording were added.
+- Model files (bundled locally in `public/models/`, no runtime CDN/network):
+  - `pose_landmarker_lite.task`: 5,777,746 bytes (5.51 MiB / 5.8 MB).
+  - `pose_landmarker_full.task`: 9,398,198 bytes (8.96 MiB / 9.4 MB). Downloaded from the official `pose_landmarker_full/float16/latest` URL.
+- Model toggle: Lite/Full fieldset in the page controls. Switching rebuilds the full pipeline (camera + landmarker) like the resolution switch. The choice is persisted under `wpr.model.v1`; default is Full when `window.innerWidth >= 900`, Lite below that. Verified at 1280 px (Full default) and 800 px (Lite default); a stored Full choice overrides the narrow-width default and survives reload.
+- Per-condition breakdown: `evaluatePose()` in `src/classifier.ts` now returns every condition with id, name, joint, measured value, formatted value, enter requirement, strict enter pass/fail, 0-1 distance, and 0-1 score (score = 1 - distance). `similarity.score` = 100 * average(condition scores); the worst condition is the lowest score. The practice UI renders a compact live list under the similarity bar with condition name, value, requirement, and green PASS / red FAIL. Added tests for all four poses and aggregate-score consistency.
+- Attempt recorder: "Record attempts" / "Stop recording" in the practice panel, plus "Download attempts JSON". While recording, each frame with tracked features stores: relative and absolute timestamps; 2D elbow angles L/R, wrist gap, signed crossing offsets L/R, wrist heights relative to the shoulder line, per-wrist visibility; the target pose's per-condition value/requirement/pass/score; classifier output label; target similarity; and MediaPipe 3D world landmarks (meters) for nose, shoulders, elbows, wrists, and hips plus 3D elbow angles L/R. Classification still uses only the 2D features. Recordings are appended as sessions under each pose in `wpr.attempts.v1` in localStorage (numbers rounded to 6 decimals for storage size; classification stays full precision), and the download exports all poses/sessions as one JSON file.
+- Headless FPS (production build, 640x480, CPU delegate, static T-pose fake-camera video, 5s average): Full ~36-39 FPS (current 38-40); Lite ~57.8 FPS (current ~60). These are headless Chrome numbers, not the MacBook Air M1 real-camera baseline.
+- Headless verification: Full was selected by default at 1280 px; the BETA condition list showed six PASS rows; the recorder saved 64 frames for BETA; the downloaded JSON contained 2D features, per-condition details, world landmarks, and 3D elbow angles (e.g. left 168.92 deg / right 151.23 deg). Switching to Lite and back to Full rebuilt tracking each time and updated FPS. Model persistence and the 800 px Lite default were checked.
+- Files changed: `src/classifier.ts`, `src/classifier.test.ts`, `src/pose.ts`, `src/main.ts`, `index.html`, `src/style.css`, `SESSION-LOG.md`; new `src/attempts.ts`, `src/attempts.test.ts`, `public/models/pose_landmarker_full.task`, `docs/screens/block-2-fix2-start.png`.
+- Build: `npm run build` passes (TypeScript + Vite).
+- Tests: `npm test` passes — 5 files, 44 tests. New coverage: per-condition detail for all 4 poses and aggregate-score consistency, attempt-frame JSON shape including 3D fields, and recorder start/stop/session handling.
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-fix2-start.png` (production build, initial pre-camera screen, 1280x720, Full model selected). Checked: no overflow, overlap, or off-screen controls.
+
+Handover checklist (Block 2 FIX 2):
+1. Full model downloaded and bundled locally; Lite/Full toggle; switching rebuilds the landmarker with resolution-switch lifecycle; choice persisted; Full on desktop width / Lite below — Built. Headless FPS measured for both. Real-camera FPS and skeleton-stability judgement are Not assessed.
+2. Per-condition detail (name, measured value, enter requirement, pass/fail, 0-1 score contribution) returned for every condition; live compact list in practice mode — Built; unit tested for all 4 poses and verified live headless.
+3. Attempt recorder flow (select target, Record attempts, Stop) captures the required 2D features, per-condition pass/score, classifier label, similarity, and 3D world landmarks/3D elbow angles; persists per pose in localStorage; downloads all attempts as JSON — Built; serialization and start/stop state unit-tested, and a live 64-frame BETA recording + JSON download verified headless. Actual 5-attempt recordings of DELTA/GAMMA/BETA are Not assessed (require the user).
+4. No threshold changes; calibration behavior unchanged — Built (thresholds and calibration tests unchanged except defaults remain as in FIX 1).
+5. `npm run build` passes — Built.
+6. `npm test` passes — Built (44/44).
+7. Production screenshot check at 1280x720 — Built; path above.
+- User test: (1) Switch the model toggle to Full (it is the desktop default) and do BETA — does the skeleton stop warping? Report the 5s-average FPS on Full too. (2) With the recorder: select DELTA, record 5 attempts (~1s hold each, return to neutral between), Stop; repeat for GAMMA and BETA. (3) Download the attempts JSON and attach it in the project chat. FIX 3 thresholds will be computed from that data, including the 2D-vs-3D elbow comparison.
+- Not yet played by a person

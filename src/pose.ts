@@ -1,6 +1,7 @@
 import {
   FilesetResolver,
   PoseLandmarker,
+  type Landmark,
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 
@@ -11,6 +12,8 @@ export interface FpsStats {
 
 export interface PoseFrame {
   landmarks: NormalizedLandmark[] | null;
+  /** MediaPipe world landmarks in meters; recorded for measurement, not classification. */
+  worldLandmarks: Landmark[] | null;
   timestampMs: number;
   fps: FpsStats;
 }
@@ -99,7 +102,12 @@ export class PoseTracker {
 
     this.recordFrame(boot.timestampMs);
     this.onFrame?.({
-      landmarks: boot.result.landmarks.length > 0 ? boot.result.landmarks[0] : null,
+      landmarks:
+        boot.result.landmarks.length > 0 ? boot.result.landmarks[0] : null,
+      worldLandmarks:
+        boot.result.worldLandmarks.length > 0
+          ? boot.result.worldLandmarks[0]
+          : null,
       timestampMs: boot.timestampMs,
       fps: this.computeFps(boot.timestampMs),
     });
@@ -203,7 +211,12 @@ export class PoseTracker {
         this.consecutiveFailures = 0;
         this.recordFrame(now);
         this.onFrame?.({
-          landmarks: result.landmarks.length > 0 ? result.landmarks[0] : null,
+          landmarks:
+            result.landmarks.length > 0 ? result.landmarks[0] : null,
+          worldLandmarks:
+            result.worldLandmarks.length > 0
+              ? result.worldLandmarks[0]
+              : null,
           timestampMs: now,
           fps: this.computeFps(now),
         });

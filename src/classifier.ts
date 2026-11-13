@@ -66,6 +66,7 @@ export interface PoseFeatures {
   hipY: number;
   left: SideFeatures;
   right: SideFeatures;
+  wristVisibility: { left: number; right: number };
 }
 
 /**
@@ -228,6 +229,10 @@ export function extractFeatures(
     chinY,
     midTorsoY,
     hipY,
+    wristVisibility: {
+      left: rawLeftWrist.visibility ?? 0,
+      right: rawRightWrist.visibility ?? 0,
+    },
     left: {
       shoulder: normalize(rawLeftShoulder),
       elbow: normalize(rawLeftElbow),
@@ -518,8 +523,17 @@ export function classifyPose(
 
 export interface PoseConditionInfo {
   id: string;
+  name: string;
   joint: string;
   hint: string;
+  /** Measured value in this condition's natural units. */
+  value: number;
+  valueLabel: string;
+  requirement: string;
+  /** Pass/fail against the strict enter requirement (not hysteresis). */
+  passed: boolean;
+  /** 1 - distance: 0 is far, 1 is perfect. */
+  score: number;
   /** 0 = comfortable target, 1 = far from it. */
   distance: number;
 }
@@ -529,29 +543,41 @@ export interface PoseSimilarity {
   worst: PoseConditionInfo;
 }
 
+export interface PoseEvaluation {
+  conditions: PoseConditionInfo[];
+  similarity: PoseSimilarity;
+}
+
 /**
- * Similarity formula: every pose condition is mapped to a 0-1 distance using a
- * comfortable target and a far fallback. The score is
- *   100 * (1 - average(condition distances)).
- * The worst condition is the one with the largest distance and supplies the
- * single-joint hint.
+ * Similarity formula: every pose condition is mapped to a 0-1 score (1 minus a
+ * soft distance between a comfortable target and a far fallback). The overall
+ * score is 100 * average(condition scores). The worst condition (lowest score)
+ * supplies the single-joint hint.
  */
+export function evaluatePose(
+  features: PoseFeatures,
+  pose: PoseId,
+  thresholds: ClassifierThresholds = DEFAULT_THRESHOLDS,
+): PoseEvaluation {
+  const conditions = buildConditions(features, pose, thresholds);
+  let totalScore = 0;
+  let worst = conditions[0];
+  for (const condition of conditions) {
+    totalScore += condition.score;
+    if (condition.score < worst.score) worst = condition;
+  }
+  const score = Math.round(
+    clamp(totalScore / conditions.length, 0, 1) * 100,
+  );
+  return { conditions, similarity: { score, worst } };
+}
+
 export function poseSimilarity(
   features: PoseFeatures,
   pose: PoseId,
   thresholds: ClassifierThresholds = DEFAULT_THRESHOLDS,
 ): PoseSimilarity {
-  const conditions = buildConditions(features, pose, thresholds);
-  let total = 0;
-  let worst = conditions[0];
-  for (const condition of conditions) {
-    total += condition.distance;
-    if (condition.distance > worst.distance) worst = condition;
-  }
-  const score = Math.round(
-    clamp(1 - total / conditions.length, 0, 1) * 100,
-  );
-  return { score, worst };
+  return evaluatePose(features, pose, thresholds).similarity;
 }
 
 function buildConditions(
@@ -560,136 +586,208 @@ function buildConditions(
   t: ClassifierThresholds,
 ): PoseConditionInfo[] {
   if (pose === 'ALPHA') {
+    const gap = wristGap(features);
+    const leftCross = wristCrossingOffset(
+      features.left.wrist.x,
+      features.leftSideSign,
+    );
+    const rightCross = wristCrossingOffset(
+      features.right.wrist.x,
+      features.rightSideSign,
+    );
+    const bandEnterMin = features.chinY + t.alphaBandInset;
+    const bandEnterMax = features.midTorsoY - t.alphaBandInset;
     const bandComfyMin = features.chinY + 0.15;
     const bandComfyMax = features.midTorsoY - 0.05;
     const bandFarMin = features.chinY - 0.25;
     const bandFarMax = features.midTorsoY + 0.3;
+
     return [
-      {
+      makeCondition({
         id: 'alpha-wrist-gap',
+        name: 'Wrist separation',
         joint: 'Both wrists',
         hint: 'Spread your wrists apart into an X.',
+        value: gap,
+        valueLabel: sw(gap),
+        requirement: geSw(t.alphaWristDistanceEnter),
+        passed: gap >= t.alphaWristDistanceEnter,
         distance: softAbove(
-          wristGap(features),
+          gap,
           t.alphaWristDistanceEnter + 0.3,
           t.alphaWristDistanceEnter - 0.2,
         ),
-      },
-      {
+      }),
+      makeCondition({
         id: 'alpha-left-cross',
+        name: 'L wrist crossing',
         joint: 'Left wrist',
         hint: 'Cross your left wrist past the midline.',
+        value: leftCross,
+        valueLabel: `${fmtSigned(leftCross)} SW`,
+        requirement: `≥ ${fmtSigned(t.alphaCrossEnter)} SW`,
+        passed: leftCross >= t.alphaCrossEnter,
         distance: softAbove(
-          wristCrossingOffset(features.left.wrist.x, features.leftSideSign),
+          leftCross,
           t.alphaCrossEnter + 0.23,
           t.alphaCrossEnter - 0.22,
         ),
-      },
-      {
+      }),
+      makeCondition({
         id: 'alpha-right-cross',
+        name: 'R wrist crossing',
         joint: 'Right wrist',
         hint: 'Cross your right wrist past the midline.',
+        value: rightCross,
+        valueLabel: `${fmtSigned(rightCross)} SW`,
+        requirement: `≥ ${fmtSigned(t.alphaCrossEnter)} SW`,
+        passed: rightCross >= t.alphaCrossEnter,
         distance: softAbove(
-          wristCrossingOffset(features.right.wrist.x, features.rightSideSign),
+          rightCross,
           t.alphaCrossEnter + 0.23,
           t.alphaCrossEnter - 0.22,
         ),
-      },
-      bandCondition(
-        'alpha-left-band',
-        'Left wrist',
-        features.left.wrist.y,
-        bandComfyMin,
-        bandComfyMax,
-        bandFarMin,
-        bandFarMax,
-      ),
-      bandCondition(
-        'alpha-right-band',
-        'Right wrist',
-        features.right.wrist.y,
-        bandComfyMin,
-        bandComfyMax,
-        bandFarMin,
-        bandFarMax,
-      ),
-      {
+      }),
+      bandCondition({
+        id: 'alpha-left-band',
+        name: 'L wrist height',
+        joint: 'Left wrist',
+        value: features.left.wrist.y,
+        enterMin: bandEnterMin,
+        enterMax: bandEnterMax,
+        comfyMin: bandComfyMin,
+        comfyMax: bandComfyMax,
+        farMin: bandFarMin,
+        farMax: bandFarMax,
+      }),
+      bandCondition({
+        id: 'alpha-right-band',
+        name: 'R wrist height',
+        joint: 'Right wrist',
+        value: features.right.wrist.y,
+        enterMin: bandEnterMin,
+        enterMax: bandEnterMax,
+        comfyMin: bandComfyMin,
+        comfyMax: bandComfyMax,
+        farMin: bandFarMin,
+        farMax: bandFarMax,
+      }),
+      makeCondition({
         id: 'alpha-left-bent',
+        name: 'L elbow bend',
         joint: 'Left elbow',
         hint: 'Bend your left elbow more.',
+        value: features.left.elbowAngle,
+        valueLabel: deg(features.left.elbowAngle),
+        requirement: leDeg(t.elbowBentEnter),
+        passed: features.left.elbowAngle <= t.elbowBentEnter,
         distance: softBelow(
           features.left.elbowAngle,
           t.elbowBentEnter - 5,
           t.elbowBentEnter + 55,
         ),
-      },
-      {
+      }),
+      makeCondition({
         id: 'alpha-right-bent',
+        name: 'R elbow bend',
         joint: 'Right elbow',
         hint: 'Bend your right elbow more.',
+        value: features.right.elbowAngle,
+        valueLabel: deg(features.right.elbowAngle),
+        requirement: leDeg(t.elbowBentEnter),
+        passed: features.right.elbowAngle <= t.elbowBentEnter,
         distance: softBelow(
           features.right.elbowAngle,
           t.elbowBentEnter - 5,
           t.elbowBentEnter + 55,
         ),
-      },
+      }),
     ];
   }
 
   if (pose === 'BETA') {
+    const leftReach = Math.abs(
+      features.left.wrist.x - features.left.shoulder.x,
+    );
+    const rightReach = Math.abs(
+      features.right.wrist.x - features.right.shoulder.x,
+    );
+
     return [
-      {
+      makeCondition({
         id: 'beta-left-straight',
+        name: 'L elbow straight',
         joint: 'Left elbow',
         hint: 'Straighten your left elbow.',
+        value: features.left.elbowAngle,
+        valueLabel: deg(features.left.elbowAngle),
+        requirement: geDeg(t.elbowStraightEnter),
+        passed: features.left.elbowAngle >= t.elbowStraightEnter,
         distance: softAbove(
           features.left.elbowAngle,
           t.elbowStraightEnter + 5,
           t.elbowStraightEnter - 65,
         ),
-      },
-      {
+      }),
+      makeCondition({
         id: 'beta-right-straight',
+        name: 'R elbow straight',
         joint: 'Right elbow',
         hint: 'Straighten your right elbow.',
+        value: features.right.elbowAngle,
+        valueLabel: deg(features.right.elbowAngle),
+        requirement: geDeg(t.elbowStraightEnter),
+        passed: features.right.elbowAngle >= t.elbowStraightEnter,
         distance: softAbove(
           features.right.elbowAngle,
           t.elbowStraightEnter + 5,
           t.elbowStraightEnter - 65,
         ),
-      },
-      shoulderHeightCondition(
-        'beta-left-height',
-        'Left wrist',
-        features.left.wrist.y - features.left.shoulder.y,
-        t.betaWristVerticalEnter,
-      ),
-      shoulderHeightCondition(
-        'beta-right-height',
-        'Right wrist',
-        features.right.wrist.y - features.right.shoulder.y,
-        t.betaWristVerticalEnter,
-      ),
-      {
+      }),
+      shoulderHeightCondition({
+        id: 'beta-left-height',
+        name: 'L wrist height',
+        joint: 'Left wrist',
+        value: features.left.wrist.y - features.left.shoulder.y,
+        verticalEnter: t.betaWristVerticalEnter,
+      }),
+      shoulderHeightCondition({
+        id: 'beta-right-height',
+        name: 'R wrist height',
+        joint: 'Right wrist',
+        value: features.right.wrist.y - features.right.shoulder.y,
+        verticalEnter: t.betaWristVerticalEnter,
+      }),
+      makeCondition({
         id: 'beta-left-reach',
+        name: 'L wrist reach',
         joint: 'Left wrist',
         hint: 'Reach your left arm further out.',
+        value: leftReach,
+        valueLabel: sw(leftReach),
+        requirement: geSw(t.betaWristHorizontalEnter),
+        passed: leftReach >= t.betaWristHorizontalEnter,
         distance: softAbove(
-          Math.abs(features.left.wrist.x - features.left.shoulder.x),
+          leftReach,
           t.betaWristHorizontalEnter + 0.2,
           t.betaWristHorizontalEnter - 0.5,
         ),
-      },
-      {
+      }),
+      makeCondition({
         id: 'beta-right-reach',
+        name: 'R wrist reach',
         joint: 'Right wrist',
         hint: 'Reach your right arm further out.',
+        value: rightReach,
+        valueLabel: sw(rightReach),
+        requirement: geSw(t.betaWristHorizontalEnter),
+        passed: rightReach >= t.betaWristHorizontalEnter,
         distance: softAbove(
-          Math.abs(features.right.wrist.x - features.right.shoulder.x),
+          rightReach,
           t.betaWristHorizontalEnter + 0.2,
           t.betaWristHorizontalEnter - 0.5,
         ),
-      },
+      }),
     ];
   }
 
@@ -710,82 +808,135 @@ function buildConditions(
       'Left',
       t,
     );
-    return averageDistance(leftUp) <= averageDistance(rightUp) ? leftUp : rightUp;
+    return averageDistance(leftUp) <= averageDistance(rightUp)
+      ? leftUp
+      : rightUp;
   }
 
+  const gap = wristGap(features);
+  const leftMidline = Math.abs(features.left.wrist.x);
+  const rightMidline = Math.abs(features.right.wrist.x);
+  const leftOwn = ownSideAmount(features.left.wrist.x, features.leftSideSign);
+  const rightOwn = ownSideAmount(features.right.wrist.x, features.rightSideSign);
+
   return [
-    {
+    makeCondition({
       id: 'delta-distance',
+      name: 'Wrist gap',
       joint: 'Both wrists',
       hint: 'Bring your wrists closer together.',
+      value: gap,
+      valueLabel: sw(gap),
+      requirement: leSw(t.deltaWristDistanceEnter),
+      passed: gap <= t.deltaWristDistanceEnter,
       distance: softBelow(
-        Math.hypot(
-          features.left.wrist.x - features.right.wrist.x,
-          features.left.wrist.y - features.right.wrist.y,
-        ),
+        gap,
         t.deltaWristDistanceEnter * 0.57,
         t.deltaWristDistanceEnter * 2.29,
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: 'delta-left-midline',
+      name: 'L wrist midline',
       joint: 'Left wrist',
       hint: 'Bring your left wrist toward the midline.',
+      value: leftMidline,
+      valueLabel: sw(leftMidline),
+      requirement: leSw(t.deltaWristMidlineEnter),
+      passed: leftMidline <= t.deltaWristMidlineEnter,
       distance: softBelow(
-        Math.abs(features.left.wrist.x),
+        leftMidline,
         t.deltaWristMidlineEnter * 0.5,
         t.deltaWristMidlineEnter * 2.33,
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: 'delta-right-midline',
+      name: 'R wrist midline',
       joint: 'Right wrist',
       hint: 'Bring your right wrist toward the midline.',
+      value: rightMidline,
+      valueLabel: sw(rightMidline),
+      requirement: leSw(t.deltaWristMidlineEnter),
+      passed: rightMidline <= t.deltaWristMidlineEnter,
       distance: softBelow(
-        Math.abs(features.right.wrist.x),
+        rightMidline,
         t.deltaWristMidlineEnter * 0.5,
         t.deltaWristMidlineEnter * 2.33,
       ),
-    },
-    bandCondition(
-      'delta-left-band',
-      'Left wrist',
-      features.left.wrist.y,
-      features.left.shoulder.y + 0.05,
-      features.hipY - 0.15,
-      features.left.shoulder.y - 0.3,
-      features.hipY + 0.3,
-    ),
-    bandCondition(
-      'delta-right-band',
-      'Right wrist',
-      features.right.wrist.y,
-      features.right.shoulder.y + 0.05,
-      features.hipY - 0.15,
-      features.right.shoulder.y - 0.3,
-      features.hipY + 0.3,
-    ),
-    {
+    }),
+    bandCondition({
+      id: 'delta-left-band',
+      name: 'L wrist band',
+      joint: 'Left wrist',
+      value: features.left.wrist.y,
+      enterMin: features.left.shoulder.y + t.deltaBandInset,
+      enterMax: features.hipY - t.deltaBandInset,
+      comfyMin: features.left.shoulder.y + 0.05,
+      comfyMax: features.hipY - 0.15,
+      farMin: features.left.shoulder.y - 0.3,
+      farMax: features.hipY + 0.3,
+    }),
+    bandCondition({
+      id: 'delta-right-band',
+      name: 'R wrist band',
+      joint: 'Right wrist',
+      value: features.right.wrist.y,
+      enterMin: features.right.shoulder.y + t.deltaBandInset,
+      enterMax: features.hipY - t.deltaBandInset,
+      comfyMin: features.right.shoulder.y + 0.05,
+      comfyMax: features.hipY - 0.15,
+      farMin: features.right.shoulder.y - 0.3,
+      farMax: features.hipY + 0.3,
+    }),
+    makeCondition({
       id: 'delta-left-own-side',
+      name: 'L wrist own side',
       joint: 'Left wrist',
       hint: 'Keep your left wrist from crossing too far past the midline.',
+      value: leftOwn,
+      valueLabel: `${fmtSigned(leftOwn)} SW`,
+      requirement: `≥ ${fmtSigned(t.deltaOwnSideEnter)} SW`,
+      passed: leftOwn >= t.deltaOwnSideEnter,
       distance: softAbove(
-        ownSideAmount(features.left.wrist.x, features.leftSideSign),
+        leftOwn,
         t.deltaOwnSideEnter + 0.25,
         t.deltaOwnSideEnter - 0.25,
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: 'delta-right-own-side',
+      name: 'R wrist own side',
       joint: 'Right wrist',
       hint: 'Keep your right wrist from crossing too far past the midline.',
+      value: rightOwn,
+      valueLabel: `${fmtSigned(rightOwn)} SW`,
+      requirement: `≥ ${fmtSigned(t.deltaOwnSideEnter)} SW`,
+      passed: rightOwn >= t.deltaOwnSideEnter,
       distance: softAbove(
-        ownSideAmount(features.right.wrist.x, features.rightSideSign),
+        rightOwn,
         t.deltaOwnSideEnter + 0.25,
         t.deltaOwnSideEnter - 0.25,
       ),
-    },
+    }),
   ];
+}
+
+interface ConditionInput {
+  id: string;
+  name: string;
+  joint: string;
+  hint: string;
+  value: number;
+  valueLabel: string;
+  requirement: string;
+  passed: boolean;
+  distance: number;
+}
+
+function makeCondition(input: ConditionInput): PoseConditionInfo {
+  const distance = clamp(input.distance, 0, 1);
+  return { ...input, distance, score: 1 - distance };
 }
 
 function gammaConditions(
@@ -796,92 +947,177 @@ function gammaConditions(
   downName: string,
   t: ClassifierThresholds,
 ): PoseConditionInfo[] {
+  const upAboveNose = features.nose.y - up.wrist.y;
+  const upAboveShoulder = up.shoulder.y - up.wrist.y;
+  const upHorizontal = Math.abs(up.wrist.x);
+  const downBelowHip = down.wrist.y - features.hipY;
+  const downMidline = Math.abs(down.wrist.x);
+
   return [
-    {
+    makeCondition({
       id: `gamma-${upName.toLowerCase()}-up`,
+      name: `${upName} wrist up`,
       joint: `${upName} wrist`,
-      hint: `Raise your ${upName.toLowerCase()} wrist above your head.`,
+      hint: `Raise your ${upName.toLowerCase()} wrist higher.`,
+      value: upAboveNose,
+      valueLabel: `nose ${fmtSigned(upAboveNose)} / shoulder ${fmtSigned(upAboveShoulder)} SW`,
+      requirement: `nose ≥ ${fmt(t.gammaUpAboveNoseEnter)} or shoulder ≥ ${fmt(t.gammaUpAboveShoulderEnter)} SW`,
+      passed:
+        upAboveNose >= t.gammaUpAboveNoseEnter ||
+        upAboveShoulder >= t.gammaUpAboveShoulderEnter,
       distance: Math.min(
-        softAbove(features.nose.y - up.wrist.y, 0.35, -0.25),
+        softAbove(upAboveNose, 0.35, -0.25),
         softAbove(
-          up.shoulder.y - up.wrist.y,
+          upAboveShoulder,
           t.gammaUpAboveShoulderEnter + 0.2,
           t.gammaUpAboveShoulderEnter - 0.35,
         ),
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: `gamma-${upName.toLowerCase()}-out`,
+      name: `${upName} wrist out`,
       joint: `${upName} wrist`,
       hint: `Move your ${upName.toLowerCase()} wrist further from the midline.`,
+      value: upHorizontal,
+      valueLabel: sw(upHorizontal),
+      requirement: geSw(t.gammaUpHorizontalEnter),
+      passed: upHorizontal >= t.gammaUpHorizontalEnter,
       distance: softAbove(
-        Math.abs(up.wrist.x),
+        upHorizontal,
         t.gammaUpHorizontalEnter + 0.2,
         t.gammaUpHorizontalEnter - 0.4,
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: `gamma-${downName.toLowerCase()}-down`,
+      name: `${downName} wrist down`,
       joint: `${downName} wrist`,
       hint: `Lower your ${downName.toLowerCase()} wrist toward your hip.`,
+      value: downBelowHip,
+      valueLabel: `${fmtSigned(downBelowHip)} SW`,
+      requirement: `≥ ${sw(t.gammaDownBelowHipEnter)}`,
+      passed: downBelowHip >= t.gammaDownBelowHipEnter,
       distance: softAbove(
-        down.wrist.y - features.hipY,
+        downBelowHip,
         t.gammaDownBelowHipEnter + 0.3,
         t.gammaDownBelowHipEnter - 0.3,
       ),
-    },
-    {
+    }),
+    makeCondition({
       id: `gamma-${downName.toLowerCase()}-midline`,
+      name: `${downName} wrist midline`,
       joint: `${downName} wrist`,
       hint: `Bring your ${downName.toLowerCase()} wrist closer to the midline.`,
+      value: downMidline,
+      valueLabel: sw(downMidline),
+      requirement: leSw(t.gammaDownMidlineEnter),
+      passed: downMidline <= t.gammaDownMidlineEnter,
       distance: softBelow(
-        Math.abs(down.wrist.x),
+        downMidline,
         t.gammaDownMidlineEnter * 0.6,
         t.gammaDownMidlineEnter * 1.8,
       ),
-    },
+    }),
   ];
 }
 
-function shoulderHeightCondition(
-  id: string,
-  joint: string,
-  wristOffsetY: number,
-  verticalEnter: number,
-): PoseConditionInfo {
-  const distance = softBelow(
-    Math.abs(wristOffsetY),
-    verticalEnter * 0.43,
-    verticalEnter * 2.29,
-  );
-  const direction = wristOffsetY > 0 ? 'Raise' : 'Lower';
-  return {
-    id,
-    joint,
-    hint: `${direction} your ${joint.toLowerCase()} to shoulder height.`,
-    distance,
-  };
+function shoulderHeightCondition(input: {
+  id: string;
+  name: string;
+  joint: string;
+  value: number;
+  verticalEnter: number;
+}): PoseConditionInfo {
+  const absolute = Math.abs(input.value);
+  const direction = input.value > 0 ? 'Raise' : 'Lower';
+  return makeCondition({
+    id: input.id,
+    name: input.name,
+    joint: input.joint,
+    hint: `${direction} your ${input.joint.toLowerCase()} to shoulder height.`,
+    value: absolute,
+    valueLabel: sw(absolute),
+    requirement: leSw(input.verticalEnter),
+    passed: absolute <= input.verticalEnter,
+    distance: softBelow(
+      absolute,
+      input.verticalEnter * 0.43,
+      input.verticalEnter * 2.29,
+    ),
+  });
 }
 
-function bandCondition(
-  id: string,
-  joint: string,
-  value: number,
-  comfyMin: number,
-  comfyMax: number,
-  farMin: number,
-  farMax: number,
-): PoseConditionInfo {
-  const distance = softBand(value, comfyMin, comfyMax, farMin, farMax);
+function bandCondition(input: {
+  id: string;
+  name: string;
+  joint: string;
+  value: number;
+  enterMin: number;
+  enterMax: number;
+  comfyMin: number;
+  comfyMax: number;
+  farMin: number;
+  farMax: number;
+}): PoseConditionInfo {
+  const { value, comfyMin, comfyMax } = input;
   let hint: string;
   if (value < comfyMin) {
-    hint = `Raise your ${joint.toLowerCase()} into the target band.`;
+    hint = `Raise your ${input.joint.toLowerCase()} into the target band.`;
   } else if (value > comfyMax) {
-    hint = `Lower your ${joint.toLowerCase()} into the target band.`;
+    hint = `Lower your ${input.joint.toLowerCase()} into the target band.`;
   } else {
-    hint = `Keep your ${joint.toLowerCase()} inside the target band.`;
+    hint = `Keep your ${input.joint.toLowerCase()} inside the target band.`;
   }
-  return { id, joint, hint, distance };
+  return makeCondition({
+    id: input.id,
+    name: input.name,
+    joint: input.joint,
+    hint,
+    value,
+    valueLabel: sw(value),
+    requirement: `${fmt(input.enterMin)}..${fmt(input.enterMax)} SW`,
+    passed: value >= input.enterMin && value <= input.enterMax,
+    distance: softBand(
+      value,
+      input.comfyMin,
+      input.comfyMax,
+      input.farMin,
+      input.farMax,
+    ),
+  });
+}
+
+function fmt(value: number): string {
+  return value.toFixed(2);
+}
+
+function fmtSigned(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
+function sw(value: number): string {
+  return `${fmt(value)} SW`;
+}
+
+function deg(value: number): string {
+  return `${Math.round(value)}°`;
+}
+
+function geSw(value: number): string {
+  return `≥ ${sw(value)}`;
+}
+
+function leSw(value: number): string {
+  return `≤ ${sw(value)}`;
+}
+
+function geDeg(value: number): string {
+  return `≥ ${deg(value)}`;
+}
+
+function leDeg(value: number): string {
+  return `≤ ${deg(value)}`;
 }
 
 function softAbove(value: number, comfortable: number, far: number): number {
