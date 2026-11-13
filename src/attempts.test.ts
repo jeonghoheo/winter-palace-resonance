@@ -25,6 +25,7 @@ function makeFeatures(): PoseFeatures {
     chinY: -0.4,
     midTorsoY: 0.75,
     hipY: 1.5,
+    hipRefY: 1.5,
     wristVisibility: { left: 0.98, right: 0.91 },
     left: {
       shoulder: v(0.5, 0),

@@ -176,3 +176,32 @@ Handover checklist (Block 2 FIX 3):
 - Production screenshot check at 1280x720 — Built; path above.
 - User test (Full model): in practice mode try each pose 5 times and report the recognized counts — DELTA (gather both fists at the solar plexus; they do NOT need to touch), GAMMA (one arm up diagonal; let the other arm hang fully down by the thigh), BETA, ALPHA. If all four reach 5/5 or 4/5, run the formal Test mode (All, 20 trials per pose) and report the per-pose success rates.
 - Not yet played by a person
+
+## Block 2 FIX 4 — upper-body robustness: shoulder-anchored hip reference + honest similarity (2026-11-13)
+- Built: an effective `hipRefY` for cropped/seated upper-body framing and a uniform gate-relative similarity rule applied to every condition of all four poses. No pose gates changed.
+- Hip reference: `PoseFeatures` now has `hipRefY`. When both hip landmarks have visibility >= 0.5, `hipRefY = hipY` (real hips); otherwise `hipRefY = CROPPED_HIP_REF_SW = 1.15` (waist level of a cropped torso). `midTorsoY` is derived from `hipRefY`; GAMMA down-below-hip, the DELTA wrist band, and the ALPHA band all use `hipRefY`. The raw `hipY` field is kept for debugging (visible hips, otherwise the legacy 1.6 SW fallback). Gate thresholds are unchanged (GAMMA down-below-hip remains enter -0.40 / exit -0.50, now measured against `hipRefY`).
+- Gate-relative similarity (replaces all hand-tuned soft ranges):
+  - At-least conditions: score 1.0 at gate + margin, 0.6 exactly at the gate, 0.0 at gate - range. Angle conditions use margin 25 deg / range 55 deg; SW conditions use margin 0.25 SW / range 0.55 SW.
+  - At-most conditions: mirror image (1.0 at gate - margin, 0.6 at the gate, 0.0 at gate + range).
+  - Band conditions: 1.0 inside the central 60% of the enter band, 0.6 at either band edge, 0.0 at 0.35 SW outside the band.
+  - Applied uniformly to ALPHA, BETA, GAMMA, and DELTA. The overall similarity remains 100 * mean(condition score); the worst condition still supplies the hint. ALPHA intentionally no longer reads ~99% just for being a familiar pose.
+- Practice UI: one static hint line near the framing guide — "Standing full-body or seated upper-body framing both work — keep your head, shoulders and both arms in frame." No other UI changes.
+- Tests: `npm test` passes — 5 files, 53 tests (was 49). New coverage: cropped-torso GAMMA (hips hidden, down wrist at the 1.15 SW hip reference) matches and scores >=70; cropped-torso DELTA (hips hidden, wrists at 0.65 SW below the shoulders, gap 0.44) matches and scores >=70; all-gates-passing fixtures for all four poses score >=70; gate scores 0.6/1.0/0.0 at gate/margin/range; band scores 1.0 central, 0.6 edge, 0.0 outside by 0.35 SW. The FIX 3 median per-condition score assertions were replaced because the scoring rule changed by design; all FIX 3 matching tests still pass.
+- Calibration is unchanged (it still scales enter thresholds within +/-20% of the current defaults). No gate threshold changes in this block.
+- Build: `npm run build` passes (TypeScript + Vite).
+- Headless verification (production build, Full model): a torso-cropped T-pose image (no legs in frame) still detected BETA, reported 95% similarity with all six BETA conditions PASS, showed the new hint line, and ran at ~37-38 FPS (5s average) headless. The crop still produced hip landmarks, so the `hipRefY = 1.15` fallback path itself was validated by the unit tests rather than live; the real seated test is the user test.
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-fix4-start.png` (production build, initial pre-camera screen, 1280x720, Full selected). Checked: no overflow, overlap, or off-screen controls.
+- Files changed: `src/classifier.ts`, `src/classifier.test.ts`, `src/attempts.test.ts` (fixture field), `index.html`, `src/style.css`, `SESSION-LOG.md`, plus screenshot `docs/screens/block-2-fix4-start.png`.
+
+Handover checklist (Block 2 FIX 4):
+1. Effective `hipRefY` (real hips when both visible, otherwise 1.15 SW) used by all classification/scoring hip-dependent conditions; raw `hipY` kept — Built; cropped-torso GAMMA/DELTA unit tests pass. Live fallback with actual missing hips is Not assessed (the torso-crop video still yielded hip landmarks).
+2. Uniform gate-relative similarity with the specified margins/ranges/bands applied to all four poses — Built; unit-tested at gate/margin/range, band edges/outside, and all-gates-passing fixtures >=70.
+3. Static framing hint line — Built; visible in the running practice screenshot.
+4. New unit tests — Built; 53/53 tests pass.
+5. No gate threshold changes beyond hipRefY; calibration unchanged — Built.
+- `npm run build` passes — Built.
+- `npm test` passes — Built.
+- Production screenshot check at 1280x720 — Built; path above.
+- User test: (a) SEATED at the desk, torso framing: try each pose 3 times — all four should recognize AND show similarity mostly above 70%. (b) Then the formal measurement STANDING: calibration once, then Test mode (All, 20 trials per pose); report per-pose success % and average recognition times. The 90% success criterion is judged on the standing run.
+- Not yet played by a person

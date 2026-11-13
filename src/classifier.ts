@@ -39,8 +39,10 @@ const RIGHT_HIP = 24;
 
 /** Approximate chin distance below the nose in shoulder-width units. */
 const CHIN_OFFSET_SW = 0.1;
-/** Fallback hip offset below the shoulders when hips are not visible. */
+/** Raw/debug fallback hip offset when hips are not visible. */
 const FALLBACK_HIP_OFFSET_SW = 1.6;
+/** Effective hip reference for cropped/seated upper-body framing (waist level). */
+const CROPPED_HIP_REF_SW = 1.15;
 
 export interface Vec2 {
   x: number;
@@ -63,7 +65,10 @@ export interface PoseFeatures {
   nose: Vec2;
   chinY: number;
   midTorsoY: number;
+  /** Raw hip line (real hips when visible, otherwise the legacy 1.6 SW debug fallback). */
   hipY: number;
+  /** Effective hip reference used by all gates/scores (1.15 SW when hips are cropped). */
+  hipRefY: number;
   left: SideFeatures;
   right: SideFeatures;
   wristVisibility: { left: number; right: number };
@@ -152,6 +157,15 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
   deltaOwnSideExit: -0.25,
 };
 
+/** Fixed gate-relative similarity rule (SW conditions). */
+export const SIMILARITY_SW_MARGIN = 0.25;
+export const SIMILARITY_SW_RANGE = 0.55;
+/** Fixed gate-relative similarity rule (angle conditions, degrees). */
+export const SIMILARITY_ANGLE_MARGIN = 25;
+export const SIMILARITY_ANGLE_RANGE = 55;
+/** How far outside a band reaches score 0. */
+export const SIMILARITY_BAND_OUTSIDE = 0.35;
+
 export function jointAngle(a: Vec2, b: Vec2, c: Vec2): number {
   const abx = a.x - b.x;
   const aby = a.y - b.y;
@@ -212,13 +226,14 @@ export function extractFeatures(
     : midY + FALLBACK_HIP_OFFSET_SW * shoulderWidth;
 
   const hipY = (hipMidY - midY) / shoulderWidth;
+  const hipRefY = hipsVisible ? hipY : CROPPED_HIP_REF_SW;
   const nose = normalize(rawNose);
   const chinY = nose.y + CHIN_OFFSET_SW;
-  const midTorsoY = hipY / 2;
+  const midTorsoY = hipRefY / 2;
 
   const fallbackHip = (sign: number): Vec2 => ({
     x: sign * 0.5,
-    y: hipY,
+    y: hipRefY,
   });
 
   return {
@@ -229,6 +244,7 @@ export function extractFeatures(
     chinY,
     midTorsoY,
     hipY,
+    hipRefY,
     wristVisibility: {
       left: rawLeftWrist.visibility ?? 0,
       right: rawRightWrist.visibility ?? 0,
@@ -426,17 +442,17 @@ export function matchesPose(
     inBand(
       features.left.wrist.y,
       features.left.shoulder.y + t.deltaBandInset,
-      features.hipY - t.deltaBandInset,
+      features.hipRefY - t.deltaBandInset,
       features.left.shoulder.y - t.deltaBandSlack,
-      features.hipY + t.deltaBandSlack,
+      features.hipRefY + t.deltaBandSlack,
       active,
     ) &&
     inBand(
       features.right.wrist.y,
       features.right.shoulder.y + t.deltaBandInset,
-      features.hipY - t.deltaBandInset,
+      features.hipRefY - t.deltaBandInset,
       features.right.shoulder.y - t.deltaBandSlack,
-      features.hipY + t.deltaBandSlack,
+      features.hipRefY + t.deltaBandSlack,
       active,
     ) &&
     atLeast(
@@ -466,7 +482,7 @@ function gammaMatches(
   // wrist passes if it clears the nose OR clears the shoulder line by enough.
   const upAboveNose = features.nose.y - up.wrist.y;
   const upAboveShoulder = up.shoulder.y - up.wrist.y;
-  const downBelowHip = down.wrist.y - features.hipY;
+  const downBelowHip = down.wrist.y - features.hipRefY;
   return (
     (atLeast(upAboveNose, t.gammaUpAboveNoseEnter, t.gammaUpAboveNoseExit, active) ||
       atLeast(
@@ -534,7 +550,7 @@ export interface PoseConditionInfo {
   passed: boolean;
   /** 1 - distance: 0 is far, 1 is perfect. */
   score: number;
-  /** 0 = comfortable target, 1 = far from it. */
+  /** 0 = perfect, 1 = far (kept for compatibility with the older API). */
   distance: number;
 }
 
@@ -549,10 +565,11 @@ export interface PoseEvaluation {
 }
 
 /**
- * Similarity formula: every pose condition is mapped to a 0-1 score (1 minus a
- * soft distance between a comfortable target and a far fallback). The overall
- * score is 100 * average(condition scores). The worst condition (lowest score)
- * supplies the single-joint hint.
+ * Similarity is gate-relative now: each condition's score comes from its own
+ * strict enter gate and the fixed rule above. A value exactly on the gate
+ * scores 0.6, clearing the gate by the margin scores 1.0, and falling behind
+ * the gate by the range scores 0. The overall similarity is the mean of the
+ * condition scores. The worst condition (lowest score) supplies the hint.
  */
 export function evaluatePose(
   features: PoseFeatures,
@@ -597,10 +614,6 @@ function buildConditions(
     );
     const bandEnterMin = features.chinY + t.alphaBandInset;
     const bandEnterMax = features.midTorsoY - t.alphaBandInset;
-    const bandComfyMin = features.chinY + 0.15;
-    const bandComfyMax = features.midTorsoY - 0.05;
-    const bandFarMin = features.chinY - 0.25;
-    const bandFarMax = features.midTorsoY + 0.3;
 
     return [
       makeCondition({
@@ -612,10 +625,11 @@ function buildConditions(
         valueLabel: sw(gap),
         requirement: geSw(t.alphaWristDistanceEnter),
         passed: gap >= t.alphaWristDistanceEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           gap,
-          t.alphaWristDistanceEnter + 0.1,
-          t.alphaWristDistanceEnter - 0.3,
+          t.alphaWristDistanceEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       }),
       makeCondition({
@@ -627,10 +641,11 @@ function buildConditions(
         valueLabel: `${fmtSigned(leftCross)} SW`,
         requirement: `≥ ${fmtSigned(t.alphaCrossEnter)} SW`,
         passed: leftCross >= t.alphaCrossEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           leftCross,
-          t.alphaCrossEnter + 0.23,
-          t.alphaCrossEnter - 0.22,
+          t.alphaCrossEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       }),
       makeCondition({
@@ -642,10 +657,11 @@ function buildConditions(
         valueLabel: `${fmtSigned(rightCross)} SW`,
         requirement: `≥ ${fmtSigned(t.alphaCrossEnter)} SW`,
         passed: rightCross >= t.alphaCrossEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           rightCross,
-          t.alphaCrossEnter + 0.23,
-          t.alphaCrossEnter - 0.22,
+          t.alphaCrossEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       }),
       bandCondition({
@@ -655,10 +671,6 @@ function buildConditions(
         value: features.left.wrist.y,
         enterMin: bandEnterMin,
         enterMax: bandEnterMax,
-        comfyMin: bandComfyMin,
-        comfyMax: bandComfyMax,
-        farMin: bandFarMin,
-        farMax: bandFarMax,
       }),
       bandCondition({
         id: 'alpha-right-band',
@@ -667,10 +679,6 @@ function buildConditions(
         value: features.right.wrist.y,
         enterMin: bandEnterMin,
         enterMax: bandEnterMax,
-        comfyMin: bandComfyMin,
-        comfyMax: bandComfyMax,
-        farMin: bandFarMin,
-        farMax: bandFarMax,
       }),
       makeCondition({
         id: 'alpha-left-bent',
@@ -681,10 +689,11 @@ function buildConditions(
         valueLabel: deg(features.left.elbowAngle),
         requirement: leDeg(t.elbowBentEnter),
         passed: features.left.elbowAngle <= t.elbowBentEnter,
-        distance: softBelow(
+        score: scoreAtMost(
           features.left.elbowAngle,
-          t.elbowBentEnter - 5,
-          t.elbowBentEnter + 55,
+          t.elbowBentEnter,
+          SIMILARITY_ANGLE_MARGIN,
+          SIMILARITY_ANGLE_RANGE,
         ),
       }),
       makeCondition({
@@ -696,10 +705,11 @@ function buildConditions(
         valueLabel: deg(features.right.elbowAngle),
         requirement: leDeg(t.elbowBentEnter),
         passed: features.right.elbowAngle <= t.elbowBentEnter,
-        distance: softBelow(
+        score: scoreAtMost(
           features.right.elbowAngle,
-          t.elbowBentEnter - 5,
-          t.elbowBentEnter + 55,
+          t.elbowBentEnter,
+          SIMILARITY_ANGLE_MARGIN,
+          SIMILARITY_ANGLE_RANGE,
         ),
       }),
     ];
@@ -712,7 +722,6 @@ function buildConditions(
     const rightReach = Math.abs(
       features.right.wrist.x - features.right.shoulder.x,
     );
-
     return [
       makeCondition({
         id: 'beta-left-straight',
@@ -723,10 +732,11 @@ function buildConditions(
         valueLabel: deg(features.left.elbowAngle),
         requirement: geDeg(t.elbowStraightEnter),
         passed: features.left.elbowAngle >= t.elbowStraightEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           features.left.elbowAngle,
-          t.elbowStraightEnter + 5,
-          t.elbowStraightEnter - 65,
+          t.elbowStraightEnter,
+          SIMILARITY_ANGLE_MARGIN,
+          SIMILARITY_ANGLE_RANGE,
         ),
       }),
       makeCondition({
@@ -738,10 +748,11 @@ function buildConditions(
         valueLabel: deg(features.right.elbowAngle),
         requirement: geDeg(t.elbowStraightEnter),
         passed: features.right.elbowAngle >= t.elbowStraightEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           features.right.elbowAngle,
-          t.elbowStraightEnter + 5,
-          t.elbowStraightEnter - 65,
+          t.elbowStraightEnter,
+          SIMILARITY_ANGLE_MARGIN,
+          SIMILARITY_ANGLE_RANGE,
         ),
       }),
       shoulderHeightCondition({
@@ -767,10 +778,11 @@ function buildConditions(
         valueLabel: sw(leftReach),
         requirement: geSw(t.betaWristHorizontalEnter),
         passed: leftReach >= t.betaWristHorizontalEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           leftReach,
-          t.betaWristHorizontalEnter + 0.2,
-          t.betaWristHorizontalEnter - 0.5,
+          t.betaWristHorizontalEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       }),
       makeCondition({
@@ -782,10 +794,11 @@ function buildConditions(
         valueLabel: sw(rightReach),
         requirement: geSw(t.betaWristHorizontalEnter),
         passed: rightReach >= t.betaWristHorizontalEnter,
-        distance: softAbove(
+        score: scoreAtLeast(
           rightReach,
-          t.betaWristHorizontalEnter + 0.2,
-          t.betaWristHorizontalEnter - 0.5,
+          t.betaWristHorizontalEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       }),
     ];
@@ -808,9 +821,7 @@ function buildConditions(
       'Left',
       t,
     );
-    return averageDistance(leftUp) <= averageDistance(rightUp)
-      ? leftUp
-      : rightUp;
+    return averageScore(leftUp) >= averageScore(rightUp) ? leftUp : rightUp;
   }
 
   const gap = wristGap(features);
@@ -818,6 +829,8 @@ function buildConditions(
   const rightMidline = Math.abs(features.right.wrist.x);
   const leftOwn = ownSideAmount(features.left.wrist.x, features.leftSideSign);
   const rightOwn = ownSideAmount(features.right.wrist.x, features.rightSideSign);
+  const bandEnterMin = features.left.shoulder.y + t.deltaBandInset;
+  const bandEnterMax = features.hipRefY - t.deltaBandInset;
 
   return [
     makeCondition({
@@ -829,10 +842,11 @@ function buildConditions(
       valueLabel: sw(gap),
       requirement: leSw(t.deltaWristDistanceEnter),
       passed: gap <= t.deltaWristDistanceEnter,
-      distance: softBelow(
+      score: scoreAtMost(
         gap,
-        t.deltaWristDistanceEnter * 0.7,
-        t.deltaWristDistanceEnter * 1.9,
+        t.deltaWristDistanceEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     makeCondition({
@@ -844,10 +858,11 @@ function buildConditions(
       valueLabel: sw(leftMidline),
       requirement: leSw(t.deltaWristMidlineEnter),
       passed: leftMidline <= t.deltaWristMidlineEnter,
-      distance: softBelow(
+      score: scoreAtMost(
         leftMidline,
-        t.deltaWristMidlineEnter * 0.8,
-        t.deltaWristMidlineEnter * 2.4,
+        t.deltaWristMidlineEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     makeCondition({
@@ -859,10 +874,11 @@ function buildConditions(
       valueLabel: sw(rightMidline),
       requirement: leSw(t.deltaWristMidlineEnter),
       passed: rightMidline <= t.deltaWristMidlineEnter,
-      distance: softBelow(
+      score: scoreAtMost(
         rightMidline,
-        t.deltaWristMidlineEnter * 0.8,
-        t.deltaWristMidlineEnter * 2.4,
+        t.deltaWristMidlineEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     bandCondition({
@@ -870,12 +886,8 @@ function buildConditions(
       name: 'L wrist band',
       joint: 'Left wrist',
       value: features.left.wrist.y,
-      enterMin: features.left.shoulder.y + t.deltaBandInset,
-      enterMax: features.hipY - t.deltaBandInset,
-      comfyMin: features.left.shoulder.y + 0.05,
-      comfyMax: features.hipY - 0.15,
-      farMin: features.left.shoulder.y - 0.3,
-      farMax: features.hipY + 0.3,
+      enterMin: bandEnterMin,
+      enterMax: bandEnterMax,
     }),
     bandCondition({
       id: 'delta-right-band',
@@ -883,11 +895,7 @@ function buildConditions(
       joint: 'Right wrist',
       value: features.right.wrist.y,
       enterMin: features.right.shoulder.y + t.deltaBandInset,
-      enterMax: features.hipY - t.deltaBandInset,
-      comfyMin: features.right.shoulder.y + 0.05,
-      comfyMax: features.hipY - 0.15,
-      farMin: features.right.shoulder.y - 0.3,
-      farMax: features.hipY + 0.3,
+      enterMax: bandEnterMax,
     }),
     makeCondition({
       id: 'delta-left-own-side',
@@ -898,10 +906,11 @@ function buildConditions(
       valueLabel: `${fmtSigned(leftOwn)} SW`,
       requirement: `≥ ${fmtSigned(t.deltaOwnSideEnter)} SW`,
       passed: leftOwn >= t.deltaOwnSideEnter,
-      distance: softAbove(
+      score: scoreAtLeast(
         leftOwn,
-        t.deltaOwnSideEnter + 0.25,
-        t.deltaOwnSideEnter - 0.25,
+        t.deltaOwnSideEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     makeCondition({
@@ -913,10 +922,11 @@ function buildConditions(
       valueLabel: `${fmtSigned(rightOwn)} SW`,
       requirement: `≥ ${fmtSigned(t.deltaOwnSideEnter)} SW`,
       passed: rightOwn >= t.deltaOwnSideEnter,
-      distance: softAbove(
+      score: scoreAtLeast(
         rightOwn,
-        t.deltaOwnSideEnter + 0.25,
-        t.deltaOwnSideEnter - 0.25,
+        t.deltaOwnSideEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
   ];
@@ -931,12 +941,12 @@ interface ConditionInput {
   valueLabel: string;
   requirement: string;
   passed: boolean;
-  distance: number;
+  score: number;
 }
 
 function makeCondition(input: ConditionInput): PoseConditionInfo {
-  const distance = clamp(input.distance, 0, 1);
-  return { ...input, distance, score: 1 - distance };
+  const score = clamp(input.score, 0, 1);
+  return { ...input, score, distance: 1 - score };
 }
 
 function gammaConditions(
@@ -950,7 +960,7 @@ function gammaConditions(
   const upAboveNose = features.nose.y - up.wrist.y;
   const upAboveShoulder = up.shoulder.y - up.wrist.y;
   const upHorizontal = Math.abs(up.wrist.x);
-  const downBelowHip = down.wrist.y - features.hipY;
+  const downBelowHip = down.wrist.y - features.hipRefY;
   const downMidline = Math.abs(down.wrist.x);
 
   return [
@@ -965,12 +975,18 @@ function gammaConditions(
       passed:
         upAboveNose >= t.gammaUpAboveNoseEnter ||
         upAboveShoulder >= t.gammaUpAboveShoulderEnter,
-      distance: Math.min(
-        softAbove(upAboveNose, 0.35, -0.25),
-        softAbove(
+      score: Math.max(
+        scoreAtLeast(
+          upAboveNose,
+          t.gammaUpAboveNoseEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
+        ),
+        scoreAtLeast(
           upAboveShoulder,
-          t.gammaUpAboveShoulderEnter + 0.2,
-          t.gammaUpAboveShoulderEnter - 0.35,
+          t.gammaUpAboveShoulderEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
         ),
       ),
     }),
@@ -983,10 +999,11 @@ function gammaConditions(
       valueLabel: sw(upHorizontal),
       requirement: geSw(t.gammaUpHorizontalEnter),
       passed: upHorizontal >= t.gammaUpHorizontalEnter,
-      distance: softAbove(
+      score: scoreAtLeast(
         upHorizontal,
-        t.gammaUpHorizontalEnter + 0.2,
-        t.gammaUpHorizontalEnter - 0.4,
+        t.gammaUpHorizontalEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     makeCondition({
@@ -998,10 +1015,11 @@ function gammaConditions(
       valueLabel: `${fmtSigned(downBelowHip)} SW`,
       requirement: `≥ ${sw(t.gammaDownBelowHipEnter)}`,
       passed: downBelowHip >= t.gammaDownBelowHipEnter,
-      distance: softAbove(
+      score: scoreAtLeast(
         downBelowHip,
-        t.gammaDownBelowHipEnter + 0.25,
-        t.gammaDownBelowHipEnter - 0.4,
+        t.gammaDownBelowHipEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
     makeCondition({
@@ -1013,10 +1031,11 @@ function gammaConditions(
       valueLabel: sw(downMidline),
       requirement: leSw(t.gammaDownMidlineEnter),
       passed: downMidline <= t.gammaDownMidlineEnter,
-      distance: softBelow(
+      score: scoreAtMost(
         downMidline,
-        t.gammaDownMidlineEnter * 0.88,
-        t.gammaDownMidlineEnter * 1.65,
+        t.gammaDownMidlineEnter,
+        SIMILARITY_SW_MARGIN,
+        SIMILARITY_SW_RANGE,
       ),
     }),
   ];
@@ -1040,10 +1059,11 @@ function shoulderHeightCondition(input: {
     valueLabel: sw(absolute),
     requirement: leSw(input.verticalEnter),
     passed: absolute <= input.verticalEnter,
-    distance: softBelow(
+    score: scoreAtMost(
       absolute,
-      input.verticalEnter * 0.43,
-      input.verticalEnter * 2.29,
+      input.verticalEnter,
+      SIMILARITY_SW_MARGIN,
+      SIMILARITY_SW_RANGE,
     ),
   });
 }
@@ -1055,16 +1075,12 @@ function bandCondition(input: {
   value: number;
   enterMin: number;
   enterMax: number;
-  comfyMin: number;
-  comfyMax: number;
-  farMin: number;
-  farMax: number;
 }): PoseConditionInfo {
-  const { value, comfyMin, comfyMax } = input;
+  const { value, enterMin, enterMax } = input;
   let hint: string;
-  if (value < comfyMin) {
+  if (value < enterMin) {
     hint = `Raise your ${input.joint.toLowerCase()} into the target band.`;
-  } else if (value > comfyMax) {
+  } else if (value > enterMax) {
     hint = `Lower your ${input.joint.toLowerCase()} into the target band.`;
   } else {
     hint = `Keep your ${input.joint.toLowerCase()} inside the target band.`;
@@ -1076,16 +1092,69 @@ function bandCondition(input: {
     hint,
     value,
     valueLabel: sw(value),
-    requirement: `${fmt(input.enterMin)}..${fmt(input.enterMax)} SW`,
-    passed: value >= input.enterMin && value <= input.enterMax,
-    distance: softBand(
-      value,
-      input.comfyMin,
-      input.comfyMax,
-      input.farMin,
-      input.farMax,
-    ),
+    requirement: `${fmt(enterMin)}..${fmt(enterMax)} SW`,
+    passed: value >= enterMin && value <= enterMax,
+    score: scoreInBand(value, enterMin, enterMax, SIMILARITY_BAND_OUTSIDE),
   });
+}
+
+function scoreAtLeast(
+  value: number,
+  gate: number,
+  margin: number,
+  range: number,
+): number {
+  if (value >= gate + margin) return 1;
+  if (value >= gate) return 0.6 + 0.4 * ((value - gate) / margin);
+  if (value >= gate - range) {
+    return 0.6 * ((value - (gate - range)) / range);
+  }
+  return 0;
+}
+
+function scoreAtMost(
+  value: number,
+  gate: number,
+  margin: number,
+  range: number,
+): number {
+  if (value <= gate - margin) return 1;
+  if (value <= gate) return 0.6 + 0.4 * ((gate - value) / margin);
+  if (value <= gate + range) {
+    return 0.6 * (((gate + range) - value) / range);
+  }
+  return 0;
+}
+
+function scoreInBand(
+  value: number,
+  min: number,
+  max: number,
+  outside: number,
+): number {
+  const width = max - min;
+  if (width <= 0) {
+    if (value >= min && value <= max) return 0.6;
+    const distance =
+      value < min ? min - value : value - max;
+    return clamp(0.6 * (1 - distance / outside), 0, 0.6);
+  }
+  const centralMin = min + width * 0.2;
+  const centralMax = max - width * 0.2;
+  if (value >= centralMin && value <= centralMax) return 1;
+  if (value < centralMin && value >= min) {
+    return 0.6 + 0.4 * ((value - min) / (centralMin - min));
+  }
+  if (value > centralMax && value <= max) {
+    return 0.6 + 0.4 * ((max - value) / (max - centralMax));
+  }
+  if (value < min && value >= min - outside) {
+    return 0.6 * (1 - (min - value) / outside);
+  }
+  if (value > max && value <= max + outside) {
+    return 0.6 * (1 - (value - max) / outside);
+  }
+  return 0;
 }
 
 function fmt(value: number): string {
@@ -1120,37 +1189,12 @@ function leDeg(value: number): string {
   return `≤ ${deg(value)}`;
 }
 
-function softAbove(value: number, comfortable: number, far: number): number {
-  if (value >= comfortable) return 0;
-  if (comfortable === far) return 1;
-  return clamp((comfortable - value) / (comfortable - far), 0, 1);
-}
-
-function softBelow(value: number, comfortable: number, far: number): number {
-  if (value <= comfortable) return 0;
-  if (far === comfortable) return 1;
-  return clamp((value - comfortable) / (far - comfortable), 0, 1);
-}
-
-function softBand(
-  value: number,
-  comfyMin: number,
-  comfyMax: number,
-  farMin: number,
-  farMax: number,
-): number {
-  if (value < comfyMin) {
-    return farMin === comfyMin ? 1 : clamp((comfyMin - value) / (comfyMin - farMin), 0, 1);
-  }
-  if (value > comfyMax) {
-    return farMax === comfyMax ? 1 : clamp((value - comfyMax) / (farMax - comfyMax), 0, 1);
-  }
-  return 0;
-}
-
-function averageDistance(conditions: PoseConditionInfo[]): number {
+function averageScore(conditions: PoseConditionInfo[]): number {
   if (conditions.length === 0) return 0;
-  return conditions.reduce((sum, condition) => sum + condition.distance, 0) / conditions.length;
+  return (
+    conditions.reduce((sum, condition) => sum + condition.score, 0) /
+    conditions.length
+  );
 }
 
 function isVisible(landmark: NormalizedLandmark | undefined): boolean {

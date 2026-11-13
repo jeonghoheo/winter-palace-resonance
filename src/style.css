@@ -327,6 +327,13 @@ fieldset label {
   transition: width 80ms linear;
 }
 
+.framing-hint {
+  margin: 8px 0 0;
+  color: #8ea0c4;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .debug-readout {
   margin: 6px 0 0;
   color: #8ea0c4;

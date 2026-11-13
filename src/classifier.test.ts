@@ -32,6 +32,7 @@ function makeFeatures(overrides: FeatureOverrides = {}): PoseFeatures {
     chinY: -0.4,
     midTorsoY: 0.75,
     hipY: 1.5,
+    hipRefY: 1.5,
     wristVisibility: { left: 1, right: 1 },
     left: {
       shoulder: v(0.5, 0),
@@ -326,49 +327,145 @@ describe('PoseClassifier stability', () => {
   });
 });
 
-describe('evaluatePose measured medians', () => {
-  it('scores the recorded DELTA, GAMMA, and ALPHA medians at 0.7 or better', () => {
-    const delta = makeFeatures({
-      left: { wrist: v(0.1, 0.4) },
-      right: { wrist: v(-0.34, 0.4) },
-    });
-    const deltaEval = evaluatePose(delta, 'DELTA');
-    expect(
-      deltaEval.conditions.find((condition) => condition.id === 'delta-distance')
-        ?.score,
-    ).toBeGreaterThanOrEqual(0.7);
-    expect(
-      deltaEval.conditions.find(
-        (condition) => condition.id === 'delta-right-midline',
-      )?.score,
-    ).toBeGreaterThanOrEqual(0.7);
-
-    const gamma = makeFeatures({
-      left: { wrist: v(0.9, -0.7) },
-      right: { wrist: v(-0.64, 1.26) },
-    });
-    const gammaEval = evaluatePose(gamma, 'GAMMA');
-    expect(
-      gammaEval.conditions.find(
-        (condition) => condition.id === 'gamma-right-midline',
-      )?.score,
-    ).toBeGreaterThanOrEqual(0.7);
-    expect(
-      gammaEval.conditions.find(
-        (condition) => condition.id === 'gamma-right-down',
-      )?.score,
-    ).toBeGreaterThanOrEqual(0.7);
+describe('gate-relative similarity', () => {
+  it('scores 0.6 on the gate, 1.0 at the comfortable margin, and 0.0 at the far range', () => {
+    const deltas = [
+      makeFeatures({
+        left: { wrist: v(0.1, 0.4) },
+        right: { wrist: v(-0.4, 0.4) },
+      }),
+      makeFeatures({
+        left: { wrist: v(0.1, 0.4) },
+        right: { wrist: v(-0.15, 0.4) },
+      }),
+      makeFeatures({
+        left: { wrist: v(0.5, 0.4) },
+        right: { wrist: v(-0.55, 0.4) },
+      }),
+    ];
+    const scores = deltas.map(
+      (features) =>
+        evaluatePose(features, 'DELTA').conditions.find(
+          (condition) => condition.id === 'delta-distance',
+        )?.score,
+    );
+    expect(scores[0]).toBeCloseTo(0.6, 6);
+    expect(scores[1]).toBeCloseTo(1, 6);
+    expect(scores[2]).toBeCloseTo(0, 6);
 
     const alpha = makeFeatures({
       left: { wrist: v(-0.275, 0.15), elbowAngle: 90 },
       right: { wrist: v(0.275, 0.15), elbowAngle: 90 },
     });
-    const alphaEval = evaluatePose(alpha, 'ALPHA');
     expect(
-      alphaEval.conditions.find(
+      evaluatePose(alpha, 'ALPHA').conditions.find(
         (condition) => condition.id === 'alpha-wrist-gap',
       )?.score,
-    ).toBeGreaterThanOrEqual(0.7);
+    ).toBeCloseTo(0.6, 6);
+
+    const betaAtGate = makeFeatures({
+      left: { wrist: v(1.7, 0), elbowAngle: 150 },
+      right: { wrist: v(-1.7, 0), elbowAngle: 150 },
+    });
+    expect(
+      evaluatePose(betaAtGate, 'BETA').conditions.find(
+        (condition) => condition.id === 'beta-left-straight',
+      )?.score,
+    ).toBeCloseTo(0.6, 6);
+
+    const betaReachZero = makeFeatures({
+      left: { wrist: v(0.95, 0), elbowAngle: 170 },
+      right: { wrist: v(-0.95, 0), elbowAngle: 170 },
+    });
+    expect(
+      evaluatePose(betaReachZero, 'BETA').conditions.find(
+        (condition) => condition.id === 'beta-left-reach',
+      )?.score,
+    ).toBeCloseTo(0, 6);
+  });
+
+  it('scores bands 1.0 in the central 60%, 0.6 at the edge, and 0.0 outside by 0.35 SW', () => {
+    const central = alphaFeatures();
+    central.left.wrist.y = 0.2;
+    central.right.wrist.y = 0.2;
+    expect(
+      evaluatePose(central, 'ALPHA').conditions.find(
+        (condition) => condition.id === 'alpha-left-band',
+      )?.score,
+    ).toBeCloseTo(1, 6);
+
+    const edge = alphaFeatures();
+    edge.left.wrist.y = -0.35;
+    edge.right.wrist.y = -0.35;
+    expect(
+      evaluatePose(edge, 'ALPHA').conditions.find(
+        (condition) => condition.id === 'alpha-left-band',
+      )?.score,
+    ).toBeCloseTo(0.6, 6);
+
+    const outside = alphaFeatures();
+    outside.left.wrist.y = -0.7;
+    outside.right.wrist.y = -0.7;
+    expect(
+      evaluatePose(outside, 'ALPHA').conditions.find(
+        (condition) => condition.id === 'alpha-left-band',
+      )?.score,
+    ).toBeCloseTo(0, 6);
+  });
+
+  it('keeps all-gates-passing fixtures for all four poses at 70 or better', () => {
+    for (const pose of POSE_IDS) {
+      expect(
+        evaluatePose(poseFixtures[pose](), pose).similarity.score,
+      ).toBeGreaterThanOrEqual(70);
+    }
+  });
+});
+
+describe('cropped upper-body framing', () => {
+  function makeCroppedLandmarks(): NormalizedLandmark[] {
+    const landmarks = makeLandmarks();
+    landmarks[23] = { ...landmarks[23], visibility: 0.1 };
+    landmarks[24] = { ...landmarks[24], visibility: 0.1 };
+    return landmarks;
+  }
+
+  function setNormalized(
+    landmarks: NormalizedLandmark[],
+    index: number,
+    x: number,
+    y: number,
+  ): void {
+    landmarks[index] = {
+      x: 0.5 + x * 0.2,
+      y: 0.4 + y * 0.2,
+      z: 0,
+      visibility: 1,
+    };
+  }
+
+  it('recognizes a cropped-torso GAMMA with the down wrist hanging at waist level', () => {
+    const landmarks = makeCroppedLandmarks();
+    setNormalized(landmarks, 15, 0.9, -0.7);
+    setNormalized(landmarks, 16, 0.65, 1.15);
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    if (!features) return;
+    expect(features.hipRefY).toBeCloseTo(1.15, 6);
+    expect(matchesPose(features, 'GAMMA', false)).toBe(true);
+    expect(poseSimilarity(features, 'GAMMA').score).toBeGreaterThanOrEqual(70);
+  });
+
+  it('recognizes a cropped-torso DELTA with the wrists gathered below the shoulders', () => {
+    const landmarks = makeCroppedLandmarks();
+    setNormalized(landmarks, 15, 0.1, 0.65);
+    setNormalized(landmarks, 16, -0.34, 0.65);
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    if (!features) return;
+    expect(features.hipRefY).toBeCloseTo(1.15, 6);
+    expect(matchesPose(features, 'DELTA', false)).toBe(true);
+    expect(poseSimilarity(features, 'DELTA').score).toBeGreaterThanOrEqual(70);
   });
 });
 
