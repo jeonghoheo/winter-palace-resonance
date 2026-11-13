@@ -26,7 +26,6 @@ export const POSE_PRIORITY: readonly PoseId[] = ['DELTA', 'ALPHA', 'GAMMA', 'BET
 export const VISIBILITY_THRESHOLD = 0.5;
 export const STABLE_RECOGNITION_MS = 300;
 
-const REQUIRED_LANDMARKS = [0, 11, 12, 13, 14, 15, 16] as const;
 const NOSE = 0;
 const LEFT_SHOULDER = 11;
 const RIGHT_SHOULDER = 12;
@@ -72,6 +71,10 @@ export interface PoseFeatures {
   left: SideFeatures;
   right: SideFeatures;
   wristVisibility: { left: number; right: number };
+  reliability: {
+    left: { elbow: boolean; wrist: boolean };
+    right: { elbow: boolean; wrist: boolean };
+  };
 }
 
 /**
@@ -178,23 +181,24 @@ export function jointAngle(a: Vec2, b: Vec2, c: Vec2): number {
 }
 
 /**
- * Extracts the classifier feature vector from raw landmarks. Returns null when
- * the visibility gate fails, so callers can output NO_POSE instead of guessing.
+ * Extracts the classifier feature vector from raw landmarks. Only the torso
+ * core (both shoulders) gates the frame; unreliable elbows/wrists are flagged
+ * per side so BETA/GAMMA can fall back to arm-segment direction evidence.
  */
 export function extractFeatures(
   landmarks: NormalizedLandmark[],
 ): PoseFeatures | null {
   if (!landmarks || landmarks.length <= RIGHT_HIP) return null;
 
-  for (const index of REQUIRED_LANDMARKS) {
-    const landmark = landmarks[index];
-    if (!landmark || (landmark.visibility ?? 0) < VISIBILITY_THRESHOLD) {
-      return null;
-    }
-  }
-
   const rawLeftShoulder = landmarks[LEFT_SHOULDER];
   const rawRightShoulder = landmarks[RIGHT_SHOULDER];
+  if (
+    !isReliableLandmark(rawLeftShoulder) ||
+    !isReliableLandmark(rawRightShoulder)
+  ) {
+    return null;
+  }
+
   const rawLeftElbow = landmarks[LEFT_ELBOW];
   const rawRightElbow = landmarks[RIGHT_ELBOW];
   const rawLeftWrist = landmarks[LEFT_WRIST];
@@ -217,8 +221,8 @@ export function extractFeatures(
     y: (point.y - midY) / shoulderWidth,
   });
 
-  const leftHipVisible = isVisible(landmarks[LEFT_HIP]);
-  const rightHipVisible = isVisible(landmarks[RIGHT_HIP]);
+  const leftHipVisible = isReliableLandmark(landmarks[LEFT_HIP]);
+  const rightHipVisible = isReliableLandmark(landmarks[RIGHT_HIP]);
   const hipsVisible = leftHipVisible && rightHipVisible;
 
   const hipMidY = hipsVisible
@@ -248,6 +252,16 @@ export function extractFeatures(
     wristVisibility: {
       left: rawLeftWrist.visibility ?? 0,
       right: rawRightWrist.visibility ?? 0,
+    },
+    reliability: {
+      left: {
+        elbow: isReliableLandmark(rawLeftElbow),
+        wrist: isReliableLandmark(rawLeftWrist),
+      },
+      right: {
+        elbow: isReliableLandmark(rawRightElbow),
+        wrist: isReliableLandmark(rawRightWrist),
+      },
     },
     left: {
       shoulder: normalize(rawLeftShoulder),
@@ -371,49 +385,15 @@ export function matchesPose(
 
   if (pose === 'BETA') {
     return (
-      atLeast(
-        features.left.elbowAngle,
-        t.elbowStraightEnter,
-        t.elbowStraightExit,
-        active,
-      ) &&
-      atLeast(
-        features.right.elbowAngle,
-        t.elbowStraightEnter,
-        t.elbowStraightExit,
-        active,
-      ) &&
-      atMost(
-        Math.abs(features.left.wrist.y - features.left.shoulder.y),
-        t.betaWristVerticalEnter,
-        t.betaWristVerticalExit,
-        active,
-      ) &&
-      atMost(
-        Math.abs(features.right.wrist.y - features.right.shoulder.y),
-        t.betaWristVerticalEnter,
-        t.betaWristVerticalExit,
-        active,
-      ) &&
-      atLeast(
-        Math.abs(features.left.wrist.x - features.left.shoulder.x),
-        t.betaWristHorizontalEnter,
-        t.betaWristHorizontalExit,
-        active,
-      ) &&
-      atLeast(
-        Math.abs(features.right.wrist.x - features.right.shoulder.x),
-        t.betaWristHorizontalEnter,
-        t.betaWristHorizontalExit,
-        active,
-      )
+      betaSideMatches(features, 'left', active, t) &&
+      betaSideMatches(features, 'right', active, t)
     );
   }
 
   if (pose === 'GAMMA') {
     return (
-      gammaMatches(features, features.left, features.right, active, t) ||
-      gammaMatches(features, features.right, features.left, active, t)
+      gammaMatches(features, 'left', 'right', active, t) ||
+      gammaMatches(features, 'right', 'left', active, t)
     );
   }
 
@@ -470,33 +450,136 @@ export function matchesPose(
   );
 }
 
-function gammaMatches(
+type SideName = 'left' | 'right';
+
+const BETA_ARM_HEIGHT_SW = 0.35;
+const BETA_ARM_REACH_SW = 0.55;
+const BETA_ARM_ANGLE_DEG = 30;
+const GAMMA_ARM_UP_SW = 0.3;
+const GAMMA_ARM_OUT_SW = 0.35;
+
+function betaSideMatches(
   features: PoseFeatures,
-  up: SideFeatures,
-  down: SideFeatures,
+  side: SideName,
   active: boolean,
   t: ClassifierThresholds,
 ): boolean {
+  const sideFeatures = features[side];
+  if (features.reliability[side].wrist) {
+    // Good wrist data always wins; the arm-direction fallback never replaces it.
+    return (
+      atLeast(
+        sideFeatures.elbowAngle,
+        t.elbowStraightEnter,
+        t.elbowStraightExit,
+        active,
+      ) &&
+      atMost(
+        Math.abs(sideFeatures.wrist.y - sideFeatures.shoulder.y),
+        t.betaWristVerticalEnter,
+        t.betaWristVerticalExit,
+        active,
+      ) &&
+      atLeast(
+        Math.abs(sideFeatures.wrist.x - sideFeatures.shoulder.x),
+        t.betaWristHorizontalEnter,
+        t.betaWristHorizontalExit,
+        active,
+      )
+    );
+  }
+  return betaArmDirectionMatches(features, side);
+}
+
+function betaArmDirectionMatches(
+  features: PoseFeatures,
+  side: SideName,
+): boolean {
+  if (!features.reliability[side].elbow) return false;
+  const { outwardDx, dy, angleDeg } = armDirection(features, side);
+  return (
+    Math.abs(dy) <= BETA_ARM_HEIGHT_SW &&
+    outwardDx >= BETA_ARM_REACH_SW &&
+    angleDeg <= BETA_ARM_ANGLE_DEG
+  );
+}
+
+function gammaArmDirectionMatches(
+  features: PoseFeatures,
+  side: SideName,
+): boolean {
+  if (!features.reliability[side].elbow) return false;
+  const sideFeatures = features[side];
+  const sideSign =
+    side === 'left' ? features.leftSideSign : features.rightSideSign;
+  const aboveShoulder = sideFeatures.shoulder.y - sideFeatures.elbow.y;
+  const outwardDx =
+    (sideFeatures.elbow.x - sideFeatures.shoulder.x) * sideSign;
+  return aboveShoulder >= GAMMA_ARM_UP_SW && outwardDx >= GAMMA_ARM_OUT_SW;
+}
+
+function armDirection(
+  features: PoseFeatures,
+  side: SideName,
+): {
+  outwardDx: number;
+  dy: number;
+  angleDeg: number;
+  aboveShoulder: number;
+} {
+  const sideFeatures = features[side];
+  const sideSign =
+    side === 'left' ? features.leftSideSign : features.rightSideSign;
+  const outwardDx =
+    (sideFeatures.elbow.x - sideFeatures.shoulder.x) * sideSign;
+  const dy = sideFeatures.elbow.y - sideFeatures.shoulder.y;
+  const angleDeg = (Math.atan2(Math.abs(dy), outwardDx) * 180) / Math.PI;
+  return {
+    outwardDx,
+    dy,
+    angleDeg,
+    aboveShoulder: sideFeatures.shoulder.y - sideFeatures.elbow.y,
+  };
+}
+
+function gammaMatches(
+  features: PoseFeatures,
+  upSide: SideName,
+  downSide: SideName,
+  active: boolean,
+  t: ClassifierThresholds,
+): boolean {
+  const up = features[upSide];
+  const down = features[downSide];
   // "Above nose" / "above shoulder" / "below hip" are positive amounts in the
-  // expected direction so the same atLeast hysteresis helper applies. The up
-  // wrist passes if it clears the nose OR clears the shoulder line by enough.
+  // expected direction so the same atLeast hysteresis helper applies.
   const upAboveNose = features.nose.y - up.wrist.y;
   const upAboveShoulder = up.shoulder.y - up.wrist.y;
   const downBelowHip = down.wrist.y - features.hipRefY;
-  return (
-    (atLeast(upAboveNose, t.gammaUpAboveNoseEnter, t.gammaUpAboveNoseExit, active) ||
-      atLeast(
-        upAboveShoulder,
-        t.gammaUpAboveShoulderEnter,
-        t.gammaUpAboveShoulderExit,
+
+  const upPass = features.reliability[upSide].wrist
+    ? (atLeast(
+        upAboveNose,
+        t.gammaUpAboveNoseEnter,
+        t.gammaUpAboveNoseExit,
         active,
-      )) &&
-    atLeast(
-      Math.abs(up.wrist.x),
-      t.gammaUpHorizontalEnter,
-      t.gammaUpHorizontalExit,
-      active,
-    ) &&
+      ) ||
+        atLeast(
+          upAboveShoulder,
+          t.gammaUpAboveShoulderEnter,
+          t.gammaUpAboveShoulderExit,
+          active,
+        )) &&
+      atLeast(
+        Math.abs(up.wrist.x),
+        t.gammaUpHorizontalEnter,
+        t.gammaUpHorizontalExit,
+        active,
+      )
+    : gammaArmDirectionMatches(features, upSide);
+
+  return (
+    upPass &&
     atLeast(
       downBelowHip,
       t.gammaDownBelowHipEnter,
@@ -716,107 +799,25 @@ function buildConditions(
   }
 
   if (pose === 'BETA') {
-    const leftReach = Math.abs(
-      features.left.wrist.x - features.left.shoulder.x,
-    );
-    const rightReach = Math.abs(
-      features.right.wrist.x - features.right.shoulder.x,
-    );
     return [
-      makeCondition({
-        id: 'beta-left-straight',
-        name: 'L elbow straight',
-        joint: 'Left elbow',
-        hint: 'Straighten your left elbow.',
-        value: features.left.elbowAngle,
-        valueLabel: deg(features.left.elbowAngle),
-        requirement: geDeg(t.elbowStraightEnter),
-        passed: features.left.elbowAngle >= t.elbowStraightEnter,
-        score: scoreAtLeast(
-          features.left.elbowAngle,
-          t.elbowStraightEnter,
-          SIMILARITY_ANGLE_MARGIN,
-          SIMILARITY_ANGLE_RANGE,
-        ),
-      }),
-      makeCondition({
-        id: 'beta-right-straight',
-        name: 'R elbow straight',
-        joint: 'Right elbow',
-        hint: 'Straighten your right elbow.',
-        value: features.right.elbowAngle,
-        valueLabel: deg(features.right.elbowAngle),
-        requirement: geDeg(t.elbowStraightEnter),
-        passed: features.right.elbowAngle >= t.elbowStraightEnter,
-        score: scoreAtLeast(
-          features.right.elbowAngle,
-          t.elbowStraightEnter,
-          SIMILARITY_ANGLE_MARGIN,
-          SIMILARITY_ANGLE_RANGE,
-        ),
-      }),
-      shoulderHeightCondition({
-        id: 'beta-left-height',
-        name: 'L wrist height',
-        joint: 'Left wrist',
-        value: features.left.wrist.y - features.left.shoulder.y,
-        verticalEnter: t.betaWristVerticalEnter,
-      }),
-      shoulderHeightCondition({
-        id: 'beta-right-height',
-        name: 'R wrist height',
-        joint: 'Right wrist',
-        value: features.right.wrist.y - features.right.shoulder.y,
-        verticalEnter: t.betaWristVerticalEnter,
-      }),
-      makeCondition({
-        id: 'beta-left-reach',
-        name: 'L wrist reach',
-        joint: 'Left wrist',
-        hint: 'Reach your left arm further out.',
-        value: leftReach,
-        valueLabel: sw(leftReach),
-        requirement: geSw(t.betaWristHorizontalEnter),
-        passed: leftReach >= t.betaWristHorizontalEnter,
-        score: scoreAtLeast(
-          leftReach,
-          t.betaWristHorizontalEnter,
-          SIMILARITY_SW_MARGIN,
-          SIMILARITY_SW_RANGE,
-        ),
-      }),
-      makeCondition({
-        id: 'beta-right-reach',
-        name: 'R wrist reach',
-        joint: 'Right wrist',
-        hint: 'Reach your right arm further out.',
-        value: rightReach,
-        valueLabel: sw(rightReach),
-        requirement: geSw(t.betaWristHorizontalEnter),
-        passed: rightReach >= t.betaWristHorizontalEnter,
-        score: scoreAtLeast(
-          rightReach,
-          t.betaWristHorizontalEnter,
-          SIMILARITY_SW_MARGIN,
-          SIMILARITY_SW_RANGE,
-        ),
-      }),
+      ...betaConditions(features, 'left', 'L', 'Left', t),
+      ...betaConditions(features, 'right', 'R', 'Right', t),
     ];
   }
 
   if (pose === 'GAMMA') {
     const leftUp = gammaConditions(
       features,
-      features.left,
-      features.right,
+      'left',
+      'right',
       'Left',
       'Right',
       t,
     );
     const rightUp = gammaConditions(
       features,
-      features.right,
-      features.left,
+      'right',
+      'left',
       'Right',
       'Left',
       t,
@@ -949,65 +950,190 @@ function makeCondition(input: ConditionInput): PoseConditionInfo {
   return { ...input, score, distance: 1 - score };
 }
 
+function betaConditions(
+  features: PoseFeatures,
+  side: SideName,
+  short: string,
+  name: string,
+  t: ClassifierThresholds,
+): PoseConditionInfo[] {
+  const sideFeatures = features[side];
+  if (features.reliability[side].wrist) {
+    return [
+      makeCondition({
+        id: `beta-${side}-straight`,
+        name: `${short} elbow straight`,
+        joint: `${name} elbow`,
+        hint: `Straighten your ${name.toLowerCase()} elbow.`,
+        value: sideFeatures.elbowAngle,
+        valueLabel: deg(sideFeatures.elbowAngle),
+        requirement: geDeg(t.elbowStraightEnter),
+        passed: sideFeatures.elbowAngle >= t.elbowStraightEnter,
+        score: scoreAtLeast(
+          sideFeatures.elbowAngle,
+          t.elbowStraightEnter,
+          SIMILARITY_ANGLE_MARGIN,
+          SIMILARITY_ANGLE_RANGE,
+        ),
+      }),
+      shoulderHeightCondition({
+        id: `beta-${side}-height`,
+        name: `${short} wrist height`,
+        joint: `${name} wrist`,
+        value: sideFeatures.wrist.y - sideFeatures.shoulder.y,
+        verticalEnter: t.betaWristVerticalEnter,
+      }),
+      makeCondition({
+        id: `beta-${side}-reach`,
+        name: `${short} wrist reach`,
+        joint: `${name} wrist`,
+        hint: `Reach your ${name.toLowerCase()} arm further out.`,
+        value: Math.abs(sideFeatures.wrist.x - sideFeatures.shoulder.x),
+        valueLabel: sw(
+          Math.abs(sideFeatures.wrist.x - sideFeatures.shoulder.x),
+        ),
+        requirement: geSw(t.betaWristHorizontalEnter),
+        passed:
+          Math.abs(sideFeatures.wrist.x - sideFeatures.shoulder.x) >=
+          t.betaWristHorizontalEnter,
+        score: scoreAtLeast(
+          Math.abs(sideFeatures.wrist.x - sideFeatures.shoulder.x),
+          t.betaWristHorizontalEnter,
+          SIMILARITY_SW_MARGIN,
+          SIMILARITY_SW_RANGE,
+        ),
+      }),
+    ];
+  }
+
+  const elbowReliable = features.reliability[side].elbow;
+  const { outwardDx, dy, angleDeg } = armDirection(features, side);
+  const height = Math.abs(dy);
+  return [
+    makeCondition({
+      id: `beta-${side}-arm-height`,
+      name: `${short} arm height (arm direction)`,
+      joint: `${name} elbow`,
+      hint: `Bring your ${name.toLowerCase()} elbow to shoulder height.`,
+      value: height,
+      valueLabel: sw(height),
+      requirement: leSw(BETA_ARM_HEIGHT_SW),
+      passed: elbowReliable && height <= BETA_ARM_HEIGHT_SW,
+      score: elbowReliable
+        ? scoreAtMost(
+            height,
+            BETA_ARM_HEIGHT_SW,
+            SIMILARITY_SW_MARGIN,
+            SIMILARITY_SW_RANGE,
+          )
+        : 0,
+    }),
+    makeCondition({
+      id: `beta-${side}-arm-reach`,
+      name: `${short} arm reach (arm direction)`,
+      joint: `${name} elbow`,
+      hint: `Reach your ${name.toLowerCase()} elbow further out.`,
+      value: outwardDx,
+      valueLabel: sw(outwardDx),
+      requirement: geSw(BETA_ARM_REACH_SW),
+      passed: elbowReliable && outwardDx >= BETA_ARM_REACH_SW,
+      score: elbowReliable
+        ? scoreAtLeast(
+            outwardDx,
+            BETA_ARM_REACH_SW,
+            SIMILARITY_SW_MARGIN,
+            SIMILARITY_SW_RANGE,
+          )
+        : 0,
+    }),
+    makeCondition({
+      id: `beta-${side}-arm-angle`,
+      name: `${short} arm angle (arm direction)`,
+      joint: `${name} elbow`,
+      hint: `Keep your ${name.toLowerCase()} upper arm horizontal.`,
+      value: angleDeg,
+      valueLabel: deg(angleDeg),
+      requirement: leDeg(BETA_ARM_ANGLE_DEG),
+      passed: elbowReliable && angleDeg <= BETA_ARM_ANGLE_DEG,
+      score: elbowReliable
+        ? scoreAtMost(
+            angleDeg,
+            BETA_ARM_ANGLE_DEG,
+            SIMILARITY_ANGLE_MARGIN,
+            SIMILARITY_ANGLE_RANGE,
+          )
+        : 0,
+    }),
+  ];
+}
+
 function gammaConditions(
   features: PoseFeatures,
-  up: SideFeatures,
-  down: SideFeatures,
+  upSide: SideName,
+  downSide: SideName,
   upName: string,
   downName: string,
   t: ClassifierThresholds,
 ): PoseConditionInfo[] {
-  const upAboveNose = features.nose.y - up.wrist.y;
-  const upAboveShoulder = up.shoulder.y - up.wrist.y;
-  const upHorizontal = Math.abs(up.wrist.x);
+  const up = features[upSide];
+  const down = features[downSide];
   const downBelowHip = down.wrist.y - features.hipRefY;
   const downMidline = Math.abs(down.wrist.x);
 
+  const upConditions: PoseConditionInfo[] =
+    features.reliability[upSide].wrist
+      ? [
+          makeCondition({
+            id: `gamma-${upSide}-up`,
+            name: `${upName} wrist up`,
+            joint: `${upName} wrist`,
+            hint: `Raise your ${upName.toLowerCase()} wrist higher.`,
+            value: features.nose.y - up.wrist.y,
+            valueLabel:
+              `nose ${fmtSigned(features.nose.y - up.wrist.y)} / ` +
+              `shoulder ${fmtSigned(up.shoulder.y - up.wrist.y)} SW`,
+            requirement: `nose ≥ ${fmt(t.gammaUpAboveNoseEnter)} or shoulder ≥ ${fmt(t.gammaUpAboveShoulderEnter)} SW`,
+            passed:
+              features.nose.y - up.wrist.y >= t.gammaUpAboveNoseEnter ||
+              up.shoulder.y - up.wrist.y >= t.gammaUpAboveShoulderEnter,
+            score: Math.max(
+              scoreAtLeast(
+                features.nose.y - up.wrist.y,
+                t.gammaUpAboveNoseEnter,
+                SIMILARITY_SW_MARGIN,
+                SIMILARITY_SW_RANGE,
+              ),
+              scoreAtLeast(
+                up.shoulder.y - up.wrist.y,
+                t.gammaUpAboveShoulderEnter,
+                SIMILARITY_SW_MARGIN,
+                SIMILARITY_SW_RANGE,
+              ),
+            ),
+          }),
+          makeCondition({
+            id: `gamma-${upSide}-out`,
+            name: `${upName} wrist out`,
+            joint: `${upName} wrist`,
+            hint: `Move your ${upName.toLowerCase()} wrist further from the midline.`,
+            value: Math.abs(up.wrist.x),
+            valueLabel: sw(Math.abs(up.wrist.x)),
+            requirement: geSw(t.gammaUpHorizontalEnter),
+            passed: Math.abs(up.wrist.x) >= t.gammaUpHorizontalEnter,
+            score: scoreAtLeast(
+              Math.abs(up.wrist.x),
+              t.gammaUpHorizontalEnter,
+              SIMILARITY_SW_MARGIN,
+              SIMILARITY_SW_RANGE,
+            ),
+          }),
+        ]
+      : gammaArmDirectionConditions(features, upSide, upName);
+
   return [
+    ...upConditions,
     makeCondition({
-      id: `gamma-${upName.toLowerCase()}-up`,
-      name: `${upName} wrist up`,
-      joint: `${upName} wrist`,
-      hint: `Raise your ${upName.toLowerCase()} wrist higher.`,
-      value: upAboveNose,
-      valueLabel: `nose ${fmtSigned(upAboveNose)} / shoulder ${fmtSigned(upAboveShoulder)} SW`,
-      requirement: `nose ≥ ${fmt(t.gammaUpAboveNoseEnter)} or shoulder ≥ ${fmt(t.gammaUpAboveShoulderEnter)} SW`,
-      passed:
-        upAboveNose >= t.gammaUpAboveNoseEnter ||
-        upAboveShoulder >= t.gammaUpAboveShoulderEnter,
-      score: Math.max(
-        scoreAtLeast(
-          upAboveNose,
-          t.gammaUpAboveNoseEnter,
-          SIMILARITY_SW_MARGIN,
-          SIMILARITY_SW_RANGE,
-        ),
-        scoreAtLeast(
-          upAboveShoulder,
-          t.gammaUpAboveShoulderEnter,
-          SIMILARITY_SW_MARGIN,
-          SIMILARITY_SW_RANGE,
-        ),
-      ),
-    }),
-    makeCondition({
-      id: `gamma-${upName.toLowerCase()}-out`,
-      name: `${upName} wrist out`,
-      joint: `${upName} wrist`,
-      hint: `Move your ${upName.toLowerCase()} wrist further from the midline.`,
-      value: upHorizontal,
-      valueLabel: sw(upHorizontal),
-      requirement: geSw(t.gammaUpHorizontalEnter),
-      passed: upHorizontal >= t.gammaUpHorizontalEnter,
-      score: scoreAtLeast(
-        upHorizontal,
-        t.gammaUpHorizontalEnter,
-        SIMILARITY_SW_MARGIN,
-        SIMILARITY_SW_RANGE,
-      ),
-    }),
-    makeCondition({
-      id: `gamma-${downName.toLowerCase()}-down`,
+      id: `gamma-${downSide}-down`,
       name: `${downName} wrist down`,
       joint: `${downName} wrist`,
       hint: `Lower your ${downName.toLowerCase()} wrist toward your hip.`,
@@ -1023,7 +1149,7 @@ function gammaConditions(
       ),
     }),
     makeCondition({
-      id: `gamma-${downName.toLowerCase()}-midline`,
+      id: `gamma-${downSide}-midline`,
       name: `${downName} wrist midline`,
       joint: `${downName} wrist`,
       hint: `Bring your ${downName.toLowerCase()} wrist closer to the midline.`,
@@ -1037,6 +1163,53 @@ function gammaConditions(
         SIMILARITY_SW_MARGIN,
         SIMILARITY_SW_RANGE,
       ),
+    }),
+  ];
+}
+
+function gammaArmDirectionConditions(
+  features: PoseFeatures,
+  side: SideName,
+  name: string,
+): PoseConditionInfo[] {
+  const elbowReliable = features.reliability[side].elbow;
+  const { outwardDx, aboveShoulder } = armDirection(features, side);
+  return [
+    makeCondition({
+      id: `gamma-${side}-arm-up`,
+      name: `${name} arm up (arm direction)`,
+      joint: `${name} elbow`,
+      hint: `Raise your ${name.toLowerCase()} elbow higher.`,
+      value: aboveShoulder,
+      valueLabel: `${fmtSigned(aboveShoulder)} SW`,
+      requirement: `≥ ${sw(GAMMA_ARM_UP_SW)}`,
+      passed: elbowReliable && aboveShoulder >= GAMMA_ARM_UP_SW,
+      score: elbowReliable
+        ? scoreAtLeast(
+            aboveShoulder,
+            GAMMA_ARM_UP_SW,
+            SIMILARITY_SW_MARGIN,
+            SIMILARITY_SW_RANGE,
+          )
+        : 0,
+    }),
+    makeCondition({
+      id: `gamma-${side}-arm-out`,
+      name: `${name} arm out (arm direction)`,
+      joint: `${name} elbow`,
+      hint: `Move your ${name.toLowerCase()} elbow further from the midline.`,
+      value: outwardDx,
+      valueLabel: sw(outwardDx),
+      requirement: `≥ ${sw(GAMMA_ARM_OUT_SW)}`,
+      passed: elbowReliable && outwardDx >= GAMMA_ARM_OUT_SW,
+      score: elbowReliable
+        ? scoreAtLeast(
+            outwardDx,
+            GAMMA_ARM_OUT_SW,
+            SIMILARITY_SW_MARGIN,
+            SIMILARITY_SW_RANGE,
+          )
+        : 0,
     }),
   ];
 }
@@ -1197,8 +1370,15 @@ function averageScore(conditions: PoseConditionInfo[]): number {
   );
 }
 
-function isVisible(landmark: NormalizedLandmark | undefined): boolean {
-  return Boolean(landmark && (landmark.visibility ?? 0) >= VISIBILITY_THRESHOLD);
+function isReliableLandmark(landmark: NormalizedLandmark | undefined): boolean {
+  return Boolean(
+    landmark &&
+      (landmark.visibility ?? 0) >= VISIBILITY_THRESHOLD &&
+      landmark.x >= 0 &&
+      landmark.x <= 1 &&
+      landmark.y >= 0 &&
+      landmark.y <= 1,
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {

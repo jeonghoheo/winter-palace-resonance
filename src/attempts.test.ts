@@ -27,6 +27,10 @@ function makeFeatures(): PoseFeatures {
     hipY: 1.5,
     hipRefY: 1.5,
     wristVisibility: { left: 0.98, right: 0.91 },
+    reliability: {
+      left: { elbow: true, wrist: true },
+      right: { elbow: true, wrist: true },
+    },
     left: {
       shoulder: v(0.5, 0),
       elbow: v(0.6, 0.3),

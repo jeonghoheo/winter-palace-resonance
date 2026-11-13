@@ -205,3 +205,35 @@ Handover checklist (Block 2 FIX 4):
 - Production screenshot check at 1280x720 — Built; path above.
 - User test: (a) SEATED at the desk, torso framing: try each pose 3 times — all four should recognize AND show similarity mostly above 70%. (b) Then the formal measurement STANDING: calibration once, then Test mode (All, 20 trials per pose); report per-pose success % and average recognition times. The 90% success criterion is judged on the standing run.
 - Not yet played by a person
+
+## Block 2 FIX 5 — setup baseline: classify in the player's own reference frame (2026-11-13)
+- Built: a setup baseline captured from the player's own camera/position, de-rotation of classification input into that baseline, per-landmark reliability with BETA/GAMMA arm-direction fallbacks for cropped wrists, a baseline-relative framing guide, and a non-blocking camera-drift chip. No gate threshold values changed.
+- Baseline schema stored in `wpr.baseline.v1`:
+  - `version: 1`, `capturedAt`, `rollDeg` (shoulder-line angle vs image horizontal), `midShoulder` (x, y in normalized image coords), `shoulderWidthPx` (normalized shoulder width), `torsoAxisDeg` (mid-shoulder -> mid-hip direction when hips were visible in the sample, else null), `sampleFraming` (bounding box of nose/shoulders/elbows/wrists; left/top/right/bottom).
+- Baseline capture: "Set baseline" in practice mode holds a relaxed neutral pose for 1.5s; shoulders must be visible in >=80% of sampled frames or the capture fails with a retry message. Baseline is also captured automatically as the first step of Calibration (before the neutral calibration step). The practice/test UI shows "Baseline: set (roll X.X deg)" or "Baseline: not set". Baseline persistence was verified through save/reload.
+- De-rotation: when a baseline exists, all landmarks are rotated around the baseline midShoulder by -rollDeg before feature extraction. The skeleton overlay keeps using raw landmarks. With no baseline the transform is identity.
+- Per-landmark reliability: `extractFeatures` now returns null only when either shoulder is unreliable (visibility < 0.5 or out of image) or the shoulder line is invalid. Elbow/wrist coordinates outside [0,1] are kept unclamped and flagged unreliable per side; the torso core alone gates the frame.
+- Fallbacks (used only when that side's wrist is unreliable/out of frame; reliable wrist data always wins):
+  - BETA side: elbow within +/-0.35 SW of the shoulder line, elbow outward offset >=0.55 SW, shoulder->elbow segment <=30 deg from horizontal.
+  - GAMMA up side: elbow >=0.30 SW above the shoulder line and >=0.35 SW outward.
+  - GAMMA down side and ALPHA/DELTA keep their existing wrist conditions. Fallback-judged conditions are named with "(arm direction)" in the live condition list and recorded attempts.
+- Framing guide: drawn from `expandedFraming(baseline.sampleFraming, 1.25)` when a baseline exists; otherwise the previous fixed zone is used.
+- Drift check: a pure `DriftMonitor` keeps a rolling 3s average of mid-shoulder position and shoulder width. Position deviation >0.35 SW or scale change >25%, sustained for 2s while no pose is being recognized, shows the non-blocking chip "Camera may have moved — re-set your baseline" with a button that starts the baseline flow. It never writes the baseline automatically.
+- Tests: `npm test` passes — 6 files, 68 tests (was 53). New coverage: baseline computation from rolled synthetic samples, serialization round-trip, capture-failure path, de-rotation label invariance for all four poses + neutral at +12/-12 deg, BETA fallback with both wrists out of frame, arms-at-sides NO_POSE, GAMMA up-wrist fallback, and drift decision streams (position, scale, pose-in-progress). The old extractFeatures test that expected a low-visibility wrist to null the frame was replaced (shoulder failure nulls; an unreliable wrist now sets a per-side reliability flag), as required by the per-landmark gate change.
+- Build: `npm run build` passes (TypeScript + Vite).
+- Headless verification (production build, Full model, a cropped-arm T-pose fake-camera image): Set baseline completed with roll -3.0 deg, stored and reloaded; BETA stayed recognized at 96% with all six conditions PASS after de-rotation; Calibration automatically captured the baseline first (status transition verified) and then completed. The fake image's wrists remained reliable even at the frame edges, so the live fallback path was not triggered; the BETA/GAMMA fallback and drift chip paths are covered by unit tests. The drift chip was not live-triggered because the fake camera is static.
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-fix5-start.png` (production build, initial pre-camera screen, 1280x720, Full selected). Checked: no overflow, overlap, or off-screen controls.
+- Files changed: `src/baseline.ts` (new), `src/baseline.test.ts` (new), `src/classifier.ts`, `src/classifier.test.ts`, `src/attempts.test.ts` (reliability fixture), `src/main.ts`, `src/draw.ts`, `index.html`, `src/style.css`, `SESSION-LOG.md`, plus screenshot `docs/screens/block-2-fix5-start.png`.
+
+Handover checklist (Block 2 FIX 5):
+1. Baseline capture UI/flow (1.5s neutral, shoulder visibility >=80%, failure/retry), schema, localStorage, auto-capture at the start of Calibration, baseline state display in practice/test — Built and live-verified for success/persistence/automatic calibration capture; the failure path is unit-tested.
+2. De-rotation before classification, raw skeleton overlay, identity with no baseline — Built; unit-tested for all four poses + neutral at +12/-12 deg and live-verified with a -3.0 deg baseline.
+3. Per-landmark reliability (only shoulders gate) and BETA/GAMMA arm-direction fallbacks with "(arm direction)" condition labels — Built; unit-tested. Live fallback was Not assessed because the test video still produced reliable wrists.
+4. Baseline-relative framing guide (sampleFraming expanded 25%) and drift chip with re-set button; drift decision pure function — Built; guide uses the baseline, drift unit-tested. Live drift was Not assessed (static camera).
+5. No gate threshold changes; calibration behavior unchanged except capturing the baseline first — Built.
+- `npm run build` passes — Built.
+- `npm test` passes — Built (68/68).
+- Production screenshot check at 1280x720 — Built; path above.
+- User test (all SEATED at your desk, your normal camera setup — do not adjust anything for us): (1) press Set baseline, sit neutral for 1.5s. (2) Practice each pose 3 times, including a BETA where your hands go slightly out of frame. (3) Then the formal measurement: calibration once, Test mode (All, 20 trials per pose), report per-pose success % and average recognition times. The 90% criterion is judged on THIS seated run.
+- Not yet played by a person

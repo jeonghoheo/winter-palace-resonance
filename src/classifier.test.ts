@@ -34,6 +34,10 @@ function makeFeatures(overrides: FeatureOverrides = {}): PoseFeatures {
     hipY: 1.5,
     hipRefY: 1.5,
     wristVisibility: { left: 1, right: 1 },
+    reliability: {
+      left: { elbow: true, wrist: true },
+      right: { elbow: true, wrist: true },
+    },
     left: {
       shoulder: v(0.5, 0),
       elbow: v(0.5, 0.4),
@@ -141,10 +145,20 @@ describe('extractFeatures', () => {
     expect(features.left.elbowAngle).toBeCloseTo(180, 3);
   });
 
-  it('returns null when a required joint is not visible', () => {
+  it('returns null when a shoulder is not reliable', () => {
+    const landmarks = makeLandmarks();
+    landmarks[11] = { ...landmarks[11], visibility: 0.4 };
+    expect(extractFeatures(landmarks)).toBeNull();
+  });
+
+  it('keeps features when a wrist is unreliable, marking it per side', () => {
     const landmarks = makeLandmarks();
     landmarks[15] = { ...landmarks[15], visibility: 0.4 };
-    expect(extractFeatures(landmarks)).toBeNull();
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    expect(features?.reliability.left.wrist).toBe(false);
+    expect(features?.reliability.right.wrist).toBe(true);
+    expect(features?.wristVisibility.left).toBe(0.4);
   });
 
   it('returns null when the landmark list is incomplete', () => {
@@ -258,6 +272,59 @@ describe('pose matching', () => {
 
   it('does not match GAMMA for a BETA T-pose', () => {
     expect(matchesPose(betaFeatures(), 'GAMMA', false)).toBe(false);
+  });
+});
+
+describe('per-landmark fallbacks', () => {
+  it('matches BETA from both elbows when both wrists are cropped', () => {
+    const landmarks = makeLandmarks();
+    landmarks[13] = { x: 0.75, y: 0.4, z: 0, visibility: 1 };
+    landmarks[14] = { x: 0.25, y: 0.4, z: 0, visibility: 1 };
+    landmarks[15] = { x: 1.2, y: 0.4, z: 0, visibility: 0.2 };
+    landmarks[16] = { x: -0.2, y: 0.4, z: 0, visibility: 0.2 };
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    if (!features) return;
+    expect(features.reliability.left.wrist).toBe(false);
+    expect(features.reliability.right.wrist).toBe(false);
+    expect(matchesPose(features, 'BETA', false)).toBe(true);
+    const evaluation = evaluatePose(features, 'BETA');
+    expect(
+      evaluation.conditions.some((condition) =>
+        condition.name.includes('(arm direction)'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match BETA for arms at the sides with cropped wrists', () => {
+    const landmarks = makeLandmarks();
+    landmarks[13] = { x: 0.6, y: 0.8, z: 0, visibility: 1 };
+    landmarks[14] = { x: 0.4, y: 0.8, z: 0, visibility: 1 };
+    landmarks[15] = { x: 0.6, y: 0.9, z: 0, visibility: 0.2 };
+    landmarks[16] = { x: 0.4, y: 0.9, z: 0, visibility: 0.2 };
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    if (!features) return;
+    expect(matchesPose(features, 'BETA', false)).toBe(false);
+    expect(classifyPose(features, null)).toBe('NO_POSE');
+  });
+
+  it('matches GAMMA from the elbow when the up wrist is cropped', () => {
+    const landmarks = makeLandmarks();
+    landmarks[13] = { x: 0.67, y: 0.33, z: 0, visibility: 1 };
+    landmarks[15] = { x: 1.2, y: 0.1, z: 0, visibility: 0.2 };
+    landmarks[16] = { x: 0.63, y: 0.73, z: 0, visibility: 1 };
+    const features = extractFeatures(landmarks);
+    expect(features).not.toBeNull();
+    if (!features) return;
+    expect(features.reliability.left.wrist).toBe(false);
+    expect(matchesPose(features, 'GAMMA', false)).toBe(true);
+    const evaluation = evaluatePose(features, 'GAMMA');
+    expect(
+      evaluation.conditions.some((condition) =>
+        condition.name.includes('(arm direction)'),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -96,6 +96,21 @@
           </div>
           <p class="framing-hint">Standing full-body or seated upper-body framing both work — keep your head, shoulders and both arms in frame.</p>
 
+          <div class="baseline-block">
+            <div class="baseline-head">
+              <span class="panel-label">Setup baseline</span>
+              <button id="set-baseline" type="button" class="secondary small">Set baseline</button>
+            </div>
+            <p id="baseline-status" class="status-line">Baseline: not set</p>
+            <div class="bar slim" aria-hidden="true">
+              <div id="baseline-fill" class="bar-fill"></div>
+            </div>
+            <div id="drift-warning" class="drift-warning" hidden>
+              <span>Camera may have moved — re-set your baseline</span>
+              <button id="drift-reset-baseline" type="button" class="secondary small">Re-set baseline</button>
+            </div>
+          </div>
+
           <div class="similarity">
             <span id="similarity-value" class="similarity-value">--%</span>
             <div id="similarity-bar" class="bar" role="progressbar" aria-label="Pose similarity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">

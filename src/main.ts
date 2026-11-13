@@ -27,6 +27,16 @@ import {
 import { detectFramingWarning } from './framing';
 import { AttemptRecorder } from './attempts';
 import {
+  BaselineSession,
+  DriftMonitor,
+  derotateLandmarks,
+  driftSampleFromLandmarks,
+  expandedFraming,
+  loadBaseline,
+  saveBaseline,
+  type Baseline,
+} from './baseline';
+import {
   RecognitionTest,
   TRIAL_TIMEOUT_MS,
   type TestTarget,
@@ -101,6 +111,13 @@ const calibrationFill = requireElement<HTMLDivElement>('#calibration-fill');
 const recordButton = requireElement<HTMLButtonElement>('#record-attempts');
 const downloadAttemptsButton = requireElement<HTMLButtonElement>('#download-attempts');
 const recordStatus = requireElement<HTMLParagraphElement>('#record-status');
+const setBaselineButton = requireElement<HTMLButtonElement>('#set-baseline');
+const baselineStatus = requireElement<HTMLParagraphElement>('#baseline-status');
+const baselineFill = requireElement<HTMLDivElement>('#baseline-fill');
+const driftWarning = requireElement<HTMLDivElement>('#drift-warning');
+const driftResetBaselineButton = requireElement<HTMLButtonElement>(
+  '#drift-reset-baseline',
+);
 const targetButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>('.pose-button'),
 );
@@ -124,6 +141,10 @@ classifier.thresholds = thresholds;
 let practiceTarget: PoseId = 'ALPHA';
 let calibrationSession: CalibrationSession | null = null;
 let recognitionTest: RecognitionTest | null = null;
+let baseline: Baseline | null = loadBaseline();
+let baselineSession: BaselineSession | null = null;
+let calibrationAfterBaseline = false;
+const driftMonitor = new DriftMonitor(baseline);
 
 let tracker: PoseTracker | null = null;
 let state: TrackingState = 'idle';
@@ -168,18 +189,23 @@ function updateTrainingControls(): void {
   const calibrating = calibrationSession !== null;
   const testActive = recognitionTest?.isActive ?? false;
   const recording = recorder.isRecording;
+  const baselineActive = baselineSession !== null;
 
-  calibrateButton.disabled = !running || calibrating || testActive || recording;
+  calibrateButton.disabled =
+    !running || calibrating || testActive || recording || baselineActive;
   resetCalibrationButton.disabled =
-    !running || calibrating || testActive || recording;
-  startTestButton.disabled = !running || calibrating || testActive || recording;
+    !running || calibrating || testActive || recording || baselineActive;
+  startTestButton.disabled =
+    !running || calibrating || testActive || recording || baselineActive;
+  setBaselineButton.disabled =
+    !running || calibrating || testActive || recording || baselineActive;
   testTargetSelect.disabled = !running || calibrating || testActive;
   downloadButton.disabled = !recognitionTest?.getResults();
-  recordButton.disabled = !running || calibrating || testActive;
+  recordButton.disabled = !running || calibrating || testActive || baselineActive;
   recordButton.textContent = recording ? 'Stop recording' : 'Record attempts';
   downloadAttemptsButton.disabled = !recorder.hasAttempts();
   for (const button of targetButtons) {
-    button.disabled = !running || calibrating || recording;
+    button.disabled = !running || calibrating || recording || baselineActive;
   }
 }
 
@@ -436,29 +462,124 @@ function updatePracticeUi(
   }
 }
 
+function updateBaselineStatus(): void {
+  if (!baseline) {
+    baselineStatus.textContent = 'Baseline: not set';
+    return;
+  }
+  baselineStatus.textContent = `Baseline: set (roll ${baseline.rollDeg.toFixed(1)}°)`;
+}
+
+function startBaselineCapture(afterCalibration: boolean): void {
+  if (
+    state !== 'running' ||
+    baselineSession !== null ||
+    calibrationSession !== null ||
+    recognitionTest?.isActive ||
+    recorder.isRecording
+  ) {
+    return;
+  }
+  baselineSession = new BaselineSession();
+  baselineSession.start(performance.now());
+  calibrationAfterBaseline = afterCalibration;
+  baselineStatus.textContent = 'Baseline: hold a relaxed neutral pose…';
+  setBarWidth(baselineFill, 0);
+  driftWarning.hidden = true;
+  updateTrainingControls();
+}
+
+function updateBaselineCapture(
+  landmarks: NormalizedLandmark[] | null,
+  timestampMs: number,
+): void {
+  if (!baselineSession) return;
+  const update = baselineSession.update(landmarks, timestampMs);
+  setBarWidth(baselineFill, update.progress * 100);
+
+  if (update.done && update.baseline) {
+    baseline = update.baseline;
+    saveBaseline(baseline);
+    driftMonitor.reset(baseline);
+    classifier.resetStability();
+    baselineSession = null;
+    setBarWidth(baselineFill, 100);
+    updateBaselineStatus();
+    const startCalibrationNow = calibrationAfterBaseline;
+    calibrationAfterBaseline = false;
+    updateTrainingControls();
+    if (startCalibrationNow) startCalibrationSession();
+    return;
+  }
+
+  if (update.failed) {
+    baselineStatus.textContent = `Baseline failed: ${update.error ?? 'try again.'}`;
+    baselineSession = null;
+    calibrationAfterBaseline = false;
+    setBarWidth(baselineFill, 0);
+    updateTrainingControls();
+    return;
+  }
+
+  baselineStatus.textContent = `Baseline: ${update.prompt}`;
+}
+
+function startCalibrationSession(): void {
+  if (state !== 'running') return;
+  calibrationSession = new CalibrationSession();
+  calibrationSession.start(performance.now());
+  calibrationStatus.textContent = 'Get ready…';
+  setBarWidth(calibrationFill, 0);
+  updateTrainingControls();
+}
+
 function handleFrame(frame: PoseFrame): void {
   if (state === 'loading') setState('running');
 
   fpsCurrent.textContent = frame.fps.current.toFixed(0);
   fpsAverage.textContent = frame.fps.average5s.toFixed(1);
 
-  const landmarks = frame.landmarks;
-  const detected = landmarks !== null && isPoseDetected(landmarks);
+  const rawLandmarks = frame.landmarks;
+  const detected = rawLandmarks !== null && isPoseDetected(rawLandmarks);
   landmarkStatus.textContent = detected ? 'detected' : 'not detected';
 
-  // Classification input is always the raw landmarks from MediaPipe.
-  const features = landmarks ? extractFeatures(landmarks) : null;
+  if (baselineSession) {
+    updateBaselineCapture(rawLandmarks, frame.timestampMs);
+  }
+
+  // Only classification is de-rotated into the player's baseline frame; the
+  // drawn skeleton always uses the raw landmarks.
+  const classificationLandmarks =
+    rawLandmarks && baseline
+      ? derotateLandmarks(rawLandmarks, baseline)
+      : rawLandmarks;
+  const features = classificationLandmarks
+    ? extractFeatures(classificationLandmarks)
+    : null;
   const classification = classifier.updateWithFeatures(
     features,
     frame.timestampMs,
   );
-  const framingMessage = detectFramingWarning(landmarks);
+  const framingMessage = detectFramingWarning(rawLandmarks);
   const targetPose = recorder.recordingPose ?? practiceTarget;
   const evaluation = features
     ? evaluatePose(features, targetPose, thresholds)
     : null;
 
   updatePracticeUi(features, classification, framingMessage, evaluation);
+
+  const driftDecision = driftMonitor.update(
+    driftSampleFromLandmarks(rawLandmarks),
+    frame.timestampMs,
+    classification.label !== 'NO_POSE',
+  );
+  driftWarning.hidden = !(
+    driftDecision.drifting &&
+    baselineSession === null &&
+    calibrationSession === null &&
+    recognitionTest?.isActive !== true &&
+    !recorder.isRecording
+  );
 
   if (recorder.isRecording) {
     if (features && evaluation) {
@@ -493,13 +614,18 @@ function handleFrame(frame: PoseFrame): void {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (state === 'running' && canvas.width > 0 && canvas.height > 0) {
-    drawFramingGuide(ctx, canvas.width, canvas.height);
+    drawFramingGuide(
+      ctx,
+      canvas.width,
+      canvas.height,
+      baseline ? expandedFraming(baseline.sampleFraming) : null,
+    );
   }
 
-  if (landmarks && canvas.width > 0 && canvas.height > 0) {
+  if (rawLandmarks && canvas.width > 0 && canvas.height > 0) {
     drawer.draw(
       ctx,
-      landmarks,
+      rawLandmarks,
       canvas.width,
       canvas.height,
       frame.timestampMs,
@@ -513,17 +639,16 @@ function startCalibration(): void {
   if (
     state !== 'running' ||
     calibrationSession !== null ||
+    baselineSession !== null ||
     recognitionTest?.isActive ||
     recorder.isRecording
   ) {
     return;
   }
 
-  calibrationSession = new CalibrationSession();
-  calibrationSession.start(performance.now());
-  calibrationStatus.textContent = 'Get ready…';
-  setBarWidth(calibrationFill, 0);
-  updateTrainingControls();
+  // Calibration always captures a fresh baseline first, so a calibrated user
+  // always has a setup frame.
+  startBaselineCapture(true);
 }
 
 function updateCalibration(
@@ -576,6 +701,7 @@ function startRecognitionTest(): void {
   if (
     state !== 'running' ||
     calibrationSession !== null ||
+    baselineSession !== null ||
     recorder.isRecording
   ) {
     return;
@@ -719,6 +845,7 @@ function toggleRecording(): void {
   if (
     state !== 'running' ||
     calibrationSession !== null ||
+    baselineSession !== null ||
     recognitionTest?.isActive
   ) {
     return;
@@ -746,6 +873,14 @@ function downloadAttempts(): void {
 }
 
 function cancelActiveTraining(message: string): void {
+  if (baselineSession) {
+    baselineSession.cancel();
+    baselineSession = null;
+    calibrationAfterBaseline = false;
+    setBarWidth(baselineFill, 0);
+    driftWarning.hidden = true;
+    updateBaselineStatus();
+  }
   if (recorder.isRecording) {
     stopRecording('Recording stopped and saved.');
   }
@@ -853,6 +988,8 @@ async function startPipeline(): Promise<void> {
     }
 
     classifier.resetStability();
+    driftMonitor.reset(baseline);
+    driftWarning.hidden = true;
     setState('running');
     startButton.textContent = 'Running';
   } catch (error) {
@@ -932,6 +1069,10 @@ startTestButton.addEventListener('click', startRecognitionTest);
 downloadButton.addEventListener('click', downloadResults);
 recordButton.addEventListener('click', toggleRecording);
 downloadAttemptsButton.addEventListener('click', downloadAttempts);
+setBaselineButton.addEventListener('click', () => startBaselineCapture(false));
+driftResetBaselineButton.addEventListener('click', () => {
+  startBaselineCapture(false);
+});
 
 for (const button of targetButtons) {
   button.addEventListener('click', () => {
@@ -958,5 +1099,6 @@ if (recorder.hasAttempts()) {
 
 applyResolutionToInputs(currentResolution);
 applyModelToInputs(loadModelChoice());
+updateBaselineStatus();
 setState('idle');
 updateResultsTable();

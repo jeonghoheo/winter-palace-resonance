@@ -174,25 +174,49 @@ export class SkeletonDrawer {
   }
 }
 
+export interface FramingRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 /**
- * Overlay-only framing zone: head near the top margin, hips above the bottom
- * margin, and 12% side margins so a T-pose has room. Deliberately textless
- * because the overlay canvas is CSS-mirrored.
+ * Overlay-only framing zone. With a baseline, uses its expanded sample framing;
+ * otherwise the fixed 12% side / 8% top / 10% bottom zone. Deliberately
+ * textless because the overlay canvas is CSS-mirrored.
  */
 export function drawFramingGuide(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
+  rect: FramingRect | null = null,
 ): void {
   if (width <= 0 || height <= 0) return;
 
-  const marginX = width * 0.12;
-  const top = height * 0.08;
-  const bottom = height * 0.9;
-  const x = marginX;
-  const y = top;
-  const w = width - marginX * 2;
-  const h = bottom - top;
+  let x: number;
+  let y: number;
+  let w: number;
+  let h: number;
+
+  if (
+    rect &&
+    rect.right > rect.left &&
+    rect.bottom > rect.top &&
+    Number.isFinite(rect.left) &&
+    Number.isFinite(rect.top)
+  ) {
+    x = rect.left * width;
+    y = rect.top * height;
+    w = (rect.right - rect.left) * width;
+    h = (rect.bottom - rect.top) * height;
+  } else {
+    const marginX = width * 0.12;
+    x = marginX;
+    y = height * 0.08;
+    w = width - marginX * 2;
+    h = height * 0.9 - height * 0.08;
+  }
 
   ctx.save();
 
