@@ -22,6 +22,7 @@
 
         <section class="controls">
           <button id="start" type="button">Start</button>
+          <button id="retry" class="secondary" type="button" hidden>Retry</button>
           <fieldset id="resolution-control">
             <legend>Capture resolution</legend>
             <label>
@@ -33,9 +34,17 @@
               1280×720
             </label>
           </fieldset>
+          <label class="toggle">
+            <input type="checkbox" id="gpu-toggle" />
+            Try GPU (experimental)
+          </label>
         </section>
 
         <section class="stats" aria-live="polite">
+          <div class="stat">
+            <span class="label">Tracking</span>
+            <span id="tracking-status" class="value">idle</span>
+          </div>
           <div class="stat">
             <span class="label">FPS (current)</span>
             <span id="fps-current" class="value">--</span>
@@ -45,12 +54,12 @@
             <span id="fps-average" class="value">--</span>
           </div>
           <div class="stat">
-            <span class="label">Landmark status</span>
+            <span class="label">Landmarks</span>
             <span id="landmark-status" class="value">not detected</span>
           </div>
           <div class="stat">
             <span class="label">Capture</span>
-            <span id="capture-status" class="value">640×480</span>
+            <span id="capture-status" class="value">—</span>
           </div>
           <div class="stat">
             <span class="label">Delegate</span>

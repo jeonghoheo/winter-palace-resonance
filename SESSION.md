@@ -55,14 +55,16 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 - Execute ONLY the block named in the user's instruction. One block per run.
 - Stack: TypeScript + Vite + Canvas 2D. No game engine, no React. MediaPipe via @mediapipe/tasks-vision (PoseLandmarker, lite model).
 - After finishing a block: run `npm run build` (must pass) and append a result entry to SESSION-LOG.md IN ENGLISH: what was built, files changed, build result, how to run it, and anything the user must test manually.
+- Handover checklist (required at the end of every block log entry): list every requirement of that block and mark each one Built / Missing / Broken / Not assessed, based on the build and the screenshot below — not on intention. End the entry with the line "Not yet played by a person" until the user confirms a manual playtest of that block.
+- Screenshot check (from Block 2 on): after the build passes, serve the production build and capture the initial (pre-camera) screen with headless Chrome at 1280x720, saved to `docs/screens/block-<n>-start.png`. Look at the screenshot: fix any text overflow, overlapping or off-screen elements before logging, and record the screenshot path in the log. If headless Chrome is unavailable, mark the screenshot "Not assessed" in the checklist instead of skipping it silently.
 - If git is initialized, commit at the end of the block with a clear message. Do not create a remote or push unless SESSION.md says so.
 - If a requirement in a block is technically impossible, stop, write the reason in SESSION-LOG.md, and do not silently substitute a different design.
 
 ## Roadmap (context only — do not build ahead)
 
-1. Camera + pose tracking + FPS measurement (this block)
-2. 4-pose classifier (angle FSM + hysteresis, raw angles) + personal calibration + recognition-rate test mode + similarity % feedback
-3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules (fun gate)
+1. Camera + pose tracking + FPS measurement — code done (commit 2892279) but manual test FAILED on 2026-11-13: tracking crashed before the first frame (see Block 1 FIX below). Fix first, then re-measure FPS.
+2. 4-pose classifier + personal calibration + recognition-rate test mode
+3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules, PLUS a tweak panel (sliders for overload rise time, pose hold time, similarity threshold, hitstop frames, shake gain, particle burst size; values persisted in localStorage; toggled with the T key; hidden by default and always hidden in the TV profile) (fun gate)
 4. First real Nightmare enemy + full HUD (per HUD rules)
 5. Three enemy types + boss combo pattern
 6. Setup/start screens, story cards, final audio (Kenney CC0 first, per Sound rules) + CREDITS.md
@@ -70,23 +72,54 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 
 ---
 
-## Block 1 — Camera, pose tracking, FPS meter
+## Block 1 FIX — pose tracking crash (do this before Block 2)
 
-Goal: prove on the user's Mac that the camera + MediaPipe pose tracking runs fast enough. Nothing game-like yet.
+Symptoms from the user's manual test on 2026-11-13 (screenshots provided by the user):
+- Landmark status stuck at "loading model..." forever; FPS current and 5s average never appear ("--").
+- Error banner: "Pose tracking stopped: Cannot read properties of undefined (reading 'activeTexture')".
+- The DELEGATE readout shows CPU, yet tracking never starts — so a half-initialized pipeline is being kept alive after a failure.
+- Switching capture to 1280x720 did NOT change the actual capture (readout still 640x480).
+- Test environment: MacBook Air M1 + Brave browser. Brave is Chromium-based, but its Shields / fingerprinting protection can restrict WebGL, which is consistent with the GPU-pipeline crash. The CPU default below stands — do not spend this fix trying to make GPU work under Brave.
+
+Required changes:
+1. Default delegate is CPU. Remove the GPU-first automatic attempt from the startup path — the 'activeTexture' crash comes from the Wasm runtime's WebGL/GPU pipeline. Keep GPU available only behind a manual "Try GPU" toggle; if GPU creation OR the first detection fails, close() that instance completely and create a fresh CPU instance. Never reuse a landmarker that has thrown.
+2. Landmarker lifecycle: exactly one live instance at a time. Wrap creation AND the first `detectForVideo` call in the same try/catch — creation can appear to succeed while the first inference is what crashes. On failure: close the instance, set an explicit error state, and show a "Retry" button that recreates everything from scratch.
+3. The loop must survive single-frame errors: catch errors per frame, count consecutive failures, and only declare tracking stopped after 30 consecutive failures. The camera preview must keep running even when tracking is stopped.
+4. Status text follows a real state machine: idle -> loading model -> running (only after the first successful detection returns landmarks) / error. "loading model..." must not persist after success or after failure.
+5. Resolution switch: stop the current tracks, close the landmarker, then re-acquire the camera AND recreate the landmarker at the new size. The CAPTURE readout must come from the live track's `getSettings()`, not from the requested value.
+6. FPS meter counts completed inference frames; it must show real numbers whenever tracking is running.
+
+Acceptance (report each in the log's handover checklist): with the CPU default, the skeleton appears and follows movement; FPS current + 5s average show real numbers at BOTH 640x480 and 1280x720; landmark status flips between detected / not detected when the user leaves the frame; switching resolution actually changes the CAPTURE readout; no error banner in the happy path; `npm run build` passes.
+
+Log a new "Block 1 FIX" entry in SESSION-LOG.md (English) with files changed, what the root cause was, build result, checklist, and a "user test" note asking for the two 5s-average FPS readings again.
+
+---
+
+## Block 2 — Pose classifier, calibration, recognition test mode
+
+Goal: turn the raw landmarks from Block 1 into reliable pose judgments, and measure the recognition rate per pose. No game loop yet.
 
 Build:
-1. Scaffold a Vite + TypeScript project in this folder (if the folder only contains SESSION.md / SESSION-LOG.md / DESIGN-RESEARCH.md, scaffold around them without deleting them). Initialize git and make an initial commit at the end.
-2. A single page with:
-   - A Start button. Camera (getUserMedia) must start only after this click.
-   - Video shown mirrored (selfie view), with a Canvas 2D overlay drawing the 33 pose landmarks and skeleton connections in real time. Apply One Euro smoothing to this OVERLAY ONLY (see Pose tech rules).
-   - Pose tracking via @mediapipe/tasks-vision PoseLandmarker with the LITE model, GPU delegate preferred, running on video frames (detectForVideo).
-   - Default capture 640x480; a toggle to switch to 1280x720.
-   - An FPS meter (current + 5-second average), landmark status (detected / not detected), and the current capture resolution, all as plain on-screen text.
-   - A clear error message if camera permission is denied or no camera exists.
-3. Keep the code organized as: `src/main.ts` (page wiring), `src/pose.ts` (MediaPipe setup + frame loop), `src/draw.ts` (skeleton overlay). No pose classification yet — that is Block 2.
+1. `src/classifier.ts` — pure functions over RAW landmarks (no smoothing on this input):
+   - Features: elbow angles L/R (shoulder-elbow-wrist), wrist and elbow positions normalized by shoulder width (SW), origin at mid-shoulder, y down as in image coordinates. Note in code comments which side convention is used (raw image coordinates vs the mirrored preview) and keep it consistent everywhere.
+   - Visibility gate: nose, both shoulders, both elbows, both wrists must have visibility >= 0.5, otherwise output NO_POSE.
+   - Per-pose conditions with hysteresis (enter threshold stricter than exit). Initial values (all tunable constants at the top of the file):
+     - Elbow "straight": enter >= 160 deg, exit <= 150 deg. Elbow "bent": <= 120 deg.
+     - ALPHA: left wrist crosses the midline to the opposite side AND right wrist crosses to the opposite side (in raw image x), both wrists vertically between chin and mid-torso, both elbows bent.
+     - BETA: both elbows straight, both wrists within ±0.35 SW vertically of their shoulder, each wrist at least 1.1 SW horizontally away from its shoulder.
+     - GAMMA: one wrist above nose level and at least 0.7 SW horizontally from midline, the other wrist below hip level and within 0.5 SW of midline; the two sides must be opposite.
+     - DELTA: wrist-to-wrist distance <= 0.35 SW, both wrists within 0.3 SW of the midline, both wrists vertically between shoulder line and hip line, NOT crossed (wrists keep their own sides, unlike ALPHA).
+   - Stickiness: once a pose is active it stays active until its own exit conditions fail; when several poses match at once, prefer the active one, otherwise DELTA > ALPHA > GAMMA > BETA.
+   - Stability: a pose counts as RECOGNIZED after it is the classifier output for 0.3s continuously (timestamp-based, not frame-count-based).
+   - Similarity: for a chosen target pose, a continuous 0-100 score from the normalized per-condition distances (document the formula in comments). Also return the single worst condition and which joint it belongs to (for the one-joint hint).
+2. Practice UI (extend the Block 1 page):
+   - Large current-pose label (ALPHA/BETA/GAMMA/DELTA/NO_POSE) and, when a target pose is selected, the similarity % as a big number + bar, plus the one-joint hint text when similarity < 80.
+   - Target pose selector (4 buttons) for free practice.
+   - Keep the FPS meter and resolution toggle from Block 1.
+3. Calibration: a "Calibrate" flow — stand neutral 1s, then hold each of the 4 poses 1s when prompted. Store per-pose median feature values in localStorage and use them to adjust the classifier thresholds, bounded to ±20% of the defaults. A "Reset calibration" button restores defaults. If calibration data exists, show "calibrated" on the page.
+4. Test mode: pick a pose (or All), run 20 trials. Each trial: show the target, wait until RECOGNIZED (success, record time-to-recognize) or 3s timeout (fail). If the skeleton is lost mid-trial, pause that trial's timer. Results table per pose: trials, successes, success %, average recognition time. Button to download the results as JSON.
+5. Tests: add vitest and unit tests for the pure math (angle calculation, normalization, each pose's enter/exit on synthetic landmark sets, hysteresis behavior). `npm test` must pass.
 
-Verify before logging:
-- `npm run build` passes.
-- `npm run dev` serves the page.
+Verify before logging: `npm run build` passes, `npm test` passes, screenshot check per the Working rules, handover checklist in the log.
 
-Log in SESSION-LOG.md (English): files created, model source used, build result, dev command, and a short "user test" note: open the page, click Start, stand back so the upper body is visible, and read the average FPS at 640x480 and at 1280x720.
+Log in SESSION-LOG.md (English): files created/changed, the final threshold constants, build + test results, screenshot path, checklist, and a "user test" note: run calibration once, then run Test mode (All, 20 trials) and report the per-pose success % and average recognition times shown on screen.

@@ -1,6 +1,10 @@
 import './style.css';
 import { SkeletonDrawer } from './draw';
-import { PoseTracker, type PoseFrame } from './pose';
+import {
+  PoseTracker,
+  type Delegate,
+  type PoseFrame,
+} from './pose';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 
 const BASE_URL = import.meta.env.BASE_URL;
@@ -10,6 +14,8 @@ const MODEL_URL = `${BASE_URL}models/pose_landmarker_lite.task`;
 const KEY_LANDMARKS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26];
 const MIN_VISIBLE_KEY_LANDMARKS = 6;
 const VISIBILITY_THRESHOLD = 0.5;
+
+type TrackingState = 'idle' | 'loading' | 'running' | 'error';
 
 interface Resolution {
   width: number;
@@ -33,9 +39,12 @@ const canvas = requireElement<HTMLCanvasElement>('#overlay');
 const stage = requireElement<HTMLDivElement>('#stage');
 const placeholder = requireElement<HTMLDivElement>('#placeholder');
 const startButton = requireElement<HTMLButtonElement>('#start');
+const retryButton = requireElement<HTMLButtonElement>('#retry');
+const gpuToggle = requireElement<HTMLInputElement>('#gpu-toggle');
 const resolutionControl = requireElement<HTMLFieldSetElement>('#resolution-control');
 const fpsCurrent = requireElement<HTMLSpanElement>('#fps-current');
 const fpsAverage = requireElement<HTMLSpanElement>('#fps-average');
+const trackingStatus = requireElement<HTMLSpanElement>('#tracking-status');
 const landmarkStatus = requireElement<HTMLSpanElement>('#landmark-status');
 const captureStatus = requireElement<HTMLSpanElement>('#capture-status');
 const delegateStatus = requireElement<HTMLSpanElement>('#delegate-status');
@@ -45,10 +54,15 @@ const ctx = require2dContext(canvas);
 
 const drawer = new SkeletonDrawer();
 let tracker: PoseTracker | null = null;
-let trackerReady = false;
-let running = false;
+let state: TrackingState = 'idle';
 let starting = false;
+let cameraLive = false;
 let currentResolution: Resolution = { width: 640, height: 480 };
+
+function setState(next: TrackingState): void {
+  state = next;
+  trackingStatus.textContent = next === 'loading' ? 'loading model…' : next;
+}
 
 function showError(message: string): void {
   errorElement.textContent = message;
@@ -69,13 +83,33 @@ function readSelectedResolution(): Resolution {
   return { width, height };
 }
 
-function syncSizes(): void {
-  const width = video.videoWidth || currentResolution.width;
-  const height = video.videoHeight || currentResolution.height;
-  stage.style.aspectRatio = `${width} / ${height}`;
-  canvas.width = width;
-  canvas.height = height;
-  captureStatus.textContent = `${width}×${height}`;
+function applyResolutionToInputs(resolution: Resolution): void {
+  const input = document.querySelector<HTMLInputElement>(
+    `input[name="resolution"][value="${resolution.width}x${resolution.height}"]`,
+  );
+  if (input) input.checked = true;
+}
+
+/**
+ * The CAPTURE readout must reflect the live track, never the requested value.
+ * Track settings are also used to size the overlay canvas.
+ */
+function syncFromTrack(): void {
+  const stream = video.srcObject;
+  const track = stream instanceof MediaStream ? stream.getVideoTracks()[0] : null;
+  const settings = track?.getSettings();
+  const trackWidth = settings?.width;
+  const trackHeight = settings?.height;
+
+  if (trackWidth && trackHeight) {
+    captureStatus.textContent = `${trackWidth}×${trackHeight}`;
+  }
+
+  const canvasWidth = video.videoWidth || trackWidth || currentResolution.width;
+  const canvasHeight = video.videoHeight || trackHeight || currentResolution.height;
+  stage.style.aspectRatio = `${canvasWidth} / ${canvasHeight}`;
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
 }
 
 async function openCamera(width: number, height: number): Promise<void> {
@@ -95,12 +129,9 @@ async function openCamera(width: number, height: number): Promise<void> {
     },
   });
 
-  const previous = video.srcObject;
-  if (previous instanceof MediaStream) {
-    for (const track of previous.getTracks()) track.stop();
-  }
-
   video.srcObject = stream;
+  cameraLive = true;
+  syncFromTrack();
 
   if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
     await new Promise<void>((resolve) => {
@@ -109,7 +140,7 @@ async function openCamera(width: number, height: number): Promise<void> {
   }
 
   await video.play();
-  syncSizes();
+  syncFromTrack();
 }
 
 function stopCamera(): void {
@@ -118,24 +149,12 @@ function stopCamera(): void {
     for (const track of stream.getTracks()) track.stop();
   }
   video.srcObject = null;
+  cameraLive = false;
 }
 
-async function ensureTracker(): Promise<string> {
-  if (!tracker) {
-    const created = new PoseTracker();
-    created.onFrame = handleFrame;
-    created.onError = (error) => {
-      showError(`Pose tracking stopped: ${errorMessage(error)}`);
-    };
-    tracker = created;
-  }
-
-  if (trackerReady) return tracker.activeDelegate ?? 'CPU';
-
-  const delegate = await tracker.init(WASM_URL, MODEL_URL);
-  trackerReady = true;
-  delegateStatus.textContent = delegate;
-  return delegate;
+function disposeTracker(): void {
+  tracker?.dispose();
+  tracker = null;
 }
 
 function isPoseDetected(landmarks: NormalizedLandmark[]): boolean {
@@ -150,6 +169,8 @@ function isPoseDetected(landmarks: NormalizedLandmark[]): boolean {
 }
 
 function handleFrame(frame: PoseFrame): void {
+  if (state === 'loading') setState('running');
+
   fpsCurrent.textContent = frame.fps.current.toFixed(0);
   fpsAverage.textContent = frame.fps.average5s.toFixed(1);
 
@@ -172,6 +193,20 @@ function handleFrame(frame: PoseFrame): void {
   }
 }
 
+function handleFatal(error: unknown): void {
+  setState('error');
+  startButton.textContent = 'Start';
+  startButton.disabled = true;
+  retryButton.hidden = false;
+  retryButton.disabled = false;
+  resolutionControl.disabled = false;
+  gpuToggle.disabled = false;
+  showError(
+    `Pose tracking stopped after repeated inference failures: ${errorMessage(error)}. ` +
+      'The camera preview is still running. Press Retry to rebuild tracking.',
+  );
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof DOMException) {
     switch (error.name) {
@@ -191,76 +226,114 @@ function errorMessage(error: unknown): string {
   return 'Unknown error.';
 }
 
-async function start(): Promise<void> {
-  if (running || starting) return;
+/**
+ * Builds the whole pipeline from scratch: camera first, then one landmarker.
+ * Also used for the resolution switch and Retry, which is why it always stops
+ * and closes the previous pipeline before acquiring anything new.
+ */
+async function startPipeline(): Promise<void> {
+  if (starting) return;
   starting = true;
+
   hideError();
+  retryButton.hidden = true;
   startButton.disabled = true;
   startButton.textContent = 'Starting…';
-  currentResolution = readSelectedResolution();
-  captureStatus.textContent = `${currentResolution.width}×${currentResolution.height}`;
+  resolutionControl.disabled = true;
+  gpuToggle.disabled = true;
+  setState('loading');
+  landmarkStatus.textContent = 'not detected';
 
   try {
-    placeholder.textContent = 'Requesting camera…';
+    disposeTracker();
+    stopCamera();
+    captureStatus.textContent = '—';
+    delegateStatus.textContent = '—';
+
+    currentResolution = readSelectedResolution();
     await openCamera(currentResolution.width, currentResolution.height);
 
     stage.hidden = false;
     placeholder.hidden = true;
-    landmarkStatus.textContent = 'loading model…';
 
-    await ensureTracker();
-    tracker?.start(video);
+    const created = new PoseTracker();
+    created.onFrame = handleFrame;
+    created.onFatal = handleFatal;
+    tracker = created;
 
-    running = true;
+    const requested: Delegate = gpuToggle.checked ? 'GPU' : 'CPU';
+    const started = await created.start(
+      video,
+      WASM_URL,
+      MODEL_URL,
+      requested,
+    );
+    delegateStatus.textContent = started.delegate;
+
+    if (started.gpuFallback) {
+      gpuToggle.checked = false;
+      console.warn('GPU was requested but failed; a fresh CPU instance is running.');
+    }
+
+    setState('running');
     startButton.textContent = 'Running';
   } catch (error) {
-    stopCamera();
-    stage.hidden = true;
-    placeholder.hidden = false;
-    placeholder.textContent = 'Camera is off. Click Start.';
+    disposeTracker();
+
+    if (!cameraLive) {
+      stage.hidden = true;
+      placeholder.hidden = false;
+      placeholder.textContent = 'Camera is off. Click Start.';
+    }
+
+    setState('error');
     startButton.textContent = 'Start';
-    startButton.disabled = false;
-    showError(errorMessage(error));
+    startButton.disabled = true;
+    retryButton.hidden = false;
+    showError(
+      cameraLive
+        ? `Pose tracking failed to start: ${errorMessage(error)}`
+        : errorMessage(error),
+    );
   } finally {
     starting = false;
+    resolutionControl.disabled = false;
+    gpuToggle.disabled = false;
+    retryButton.disabled = false;
   }
-}
-
-function applyResolutionToInputs(resolution: Resolution): void {
-  const input = document.querySelector<HTMLInputElement>(
-    `input[name="resolution"][value="${resolution.width}x${resolution.height}"]`,
-  );
-  if (input) input.checked = true;
 }
 
 async function changeResolution(): Promise<void> {
-  const previous = currentResolution;
   currentResolution = readSelectedResolution();
-  captureStatus.textContent = `${currentResolution.width}×${currentResolution.height}`;
 
-  if (!running) return;
-
-  hideError();
-  resolutionControl.disabled = true;
-  try {
-    await openCamera(currentResolution.width, currentResolution.height);
-    tracker?.resetVideoClock();
-    drawer.reset();
-    syncSizes();
-  } catch (error) {
-    currentResolution = previous;
-    applyResolutionToInputs(previous);
-    captureStatus.textContent = `${previous.width}×${previous.height}`;
-    showError(errorMessage(error));
-  } finally {
-    resolutionControl.disabled = false;
+  if (!cameraLive) {
+    captureStatus.textContent = '—';
+    return;
   }
+
+  // Re-acquire the camera and recreate the landmarker at the new size.
+  await startPipeline();
+}
+
+function changeDelegate(): void {
+  if (!cameraLive) return;
+  // Rebuild tracking with the newly selected delegate.
+  void startPipeline();
 }
 
 startButton.addEventListener('click', () => {
-  void start();
+  void startPipeline();
+});
+
+retryButton.addEventListener('click', () => {
+  void startPipeline();
 });
 
 resolutionControl.addEventListener('change', () => {
   void changeResolution();
 });
+
+gpuToggle.addEventListener('change', changeDelegate);
+
+applyResolutionToInputs(currentResolution);
+setState('idle');
