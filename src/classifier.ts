@@ -123,8 +123,8 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
   alphaCrossExit: -0.02,
   alphaBandInset: 0.05,
   alphaBandSlack: 0.1,
-  alphaWristDistanceEnter: 0.5,
-  alphaWristDistanceExit: 0.45,
+  alphaWristDistanceEnter: 0.55,
+  alphaWristDistanceExit: 0.48,
 
   betaWristVerticalEnter: 0.45,
   betaWristVerticalExit: 0.55,
@@ -137,15 +137,15 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
   gammaUpAboveShoulderExit: 0.8,
   gammaUpHorizontalEnter: 0.55,
   gammaUpHorizontalExit: 0.45,
-  gammaDownBelowHipEnter: 0.0,
-  gammaDownBelowHipExit: -0.1,
-  gammaDownMidlineEnter: 0.5,
-  gammaDownMidlineExit: 0.6,
+  gammaDownBelowHipEnter: -0.4,
+  gammaDownBelowHipExit: -0.5,
+  gammaDownMidlineEnter: 0.85,
+  gammaDownMidlineExit: 0.95,
 
-  deltaWristDistanceEnter: 0.35,
-  deltaWristDistanceExit: 0.45,
-  deltaWristMidlineEnter: 0.3,
-  deltaWristMidlineExit: 0.4,
+  deltaWristDistanceEnter: 0.5,
+  deltaWristDistanceExit: 0.62,
+  deltaWristMidlineEnter: 0.38,
+  deltaWristMidlineExit: 0.48,
   deltaBandInset: 0.05,
   deltaBandSlack: 0.1,
   deltaOwnSideEnter: -0.15,
@@ -614,8 +614,8 @@ function buildConditions(
         passed: gap >= t.alphaWristDistanceEnter,
         distance: softAbove(
           gap,
-          t.alphaWristDistanceEnter + 0.3,
-          t.alphaWristDistanceEnter - 0.2,
+          t.alphaWristDistanceEnter + 0.1,
+          t.alphaWristDistanceEnter - 0.3,
         ),
       }),
       makeCondition({
@@ -831,8 +831,8 @@ function buildConditions(
       passed: gap <= t.deltaWristDistanceEnter,
       distance: softBelow(
         gap,
-        t.deltaWristDistanceEnter * 0.57,
-        t.deltaWristDistanceEnter * 2.29,
+        t.deltaWristDistanceEnter * 0.7,
+        t.deltaWristDistanceEnter * 1.9,
       ),
     }),
     makeCondition({
@@ -846,8 +846,8 @@ function buildConditions(
       passed: leftMidline <= t.deltaWristMidlineEnter,
       distance: softBelow(
         leftMidline,
-        t.deltaWristMidlineEnter * 0.5,
-        t.deltaWristMidlineEnter * 2.33,
+        t.deltaWristMidlineEnter * 0.8,
+        t.deltaWristMidlineEnter * 2.4,
       ),
     }),
     makeCondition({
@@ -861,8 +861,8 @@ function buildConditions(
       passed: rightMidline <= t.deltaWristMidlineEnter,
       distance: softBelow(
         rightMidline,
-        t.deltaWristMidlineEnter * 0.5,
-        t.deltaWristMidlineEnter * 2.33,
+        t.deltaWristMidlineEnter * 0.8,
+        t.deltaWristMidlineEnter * 2.4,
       ),
     }),
     bandCondition({
@@ -1000,8 +1000,8 @@ function gammaConditions(
       passed: downBelowHip >= t.gammaDownBelowHipEnter,
       distance: softAbove(
         downBelowHip,
-        t.gammaDownBelowHipEnter + 0.3,
-        t.gammaDownBelowHipEnter - 0.3,
+        t.gammaDownBelowHipEnter + 0.25,
+        t.gammaDownBelowHipEnter - 0.4,
       ),
     }),
     makeCondition({
@@ -1015,8 +1015,8 @@ function gammaConditions(
       passed: downMidline <= t.gammaDownMidlineEnter,
       distance: softBelow(
         downMidline,
-        t.gammaDownMidlineEnter * 0.6,
-        t.gammaDownMidlineEnter * 1.8,
+        t.gammaDownMidlineEnter * 0.88,
+        t.gammaDownMidlineEnter * 1.65,
       ),
     }),
   ];

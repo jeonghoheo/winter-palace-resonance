@@ -48,7 +48,8 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 ### Pose tech
 - Classification runs on RAW joint angles through an angle state machine with hysteresis (enter and exit thresholds differ, e.g., an elbow counts as straight above 160 degrees and bent below 100 degrees). Smoothing (One Euro filter, minCutoff 0.8-1.3, beta 0.01-0.05) is applied ONLY to the visual skeleton overlay, never to classification input — smoothing classification input makes judgments feel sluggish.
 - Gate classification on landmark visibility; when key joints are not visible, output "no pose", never a guess.
-- Pose model: lite + GPU delegate. Default capture 640x480 (the model internally uses 256x256, so higher capture mainly costs performance).
+- Pose model: Full on desktop-width viewports, Lite below that (decided in Block 2 FIX 2 — the lite model's landmark warping at T-pose distance was the BETA blocker; Full measures ~38 FPS on the user's MacBook Air M1, real camera). CPU delegate default. Default capture 640x480 (the model internally uses 256x256, so higher capture mainly costs performance).
+- Classification uses 2D image-coordinate angles. 3D world-landmark angles were measured against 2D on real attempt data (Block 2 FIX 3 analysis) and read ~10 degrees lower, which would tighten BETA past its working point — do NOT switch classification to 3D angles.
 
 ## Working rules
 
@@ -63,7 +64,7 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 ## Roadmap (context only — do not build ahead)
 
 1. Camera + pose tracking + FPS measurement — DONE (Block 1 + FIX, commits 2892279 / c137fa7). Measured on the user's MacBook Air M1 in Brave with a real camera: 5s-average FPS 60.2 at 640x480 and 58.4 at 1280x720; landmarks detected. Performance baseline confirmed — large headroom over the 25 FPS effects criterion.
-2. 4-pose classifier + personal calibration + recognition-rate test mode — code done (commit e85d758); Block 2 FIX done (commit 5f55997, tests 38/38). Second human playtest (2026-11-13): ALPHA works; BETA still hard AND the drawn skeleton itself warps/bends at T-pose (a landmark-quality problem, not a threshold problem); GAMMA similarity rarely passes ~40% (suspected: one or more conditions score near zero structurally); DELTA still fails. Next: Block 2 FIX 2 (measurement round — full model option + per-condition breakdown + attempt recorder with parallel 3D world-landmark angle capture; NO threshold changes until real attempt data exists). Full 20-trial measurement still pending. Recognition improvement ladder agreed with the user (2026-11-13): FIX 2 measurement -> Full model + 3D-landmark angles -> RTMPose only if still insufficient, and that decision waits until after the Block 3 fun gate.
+2. 4-pose classifier + personal calibration + recognition-rate test mode — code done (commit e85d758); Block 2 FIX done (commit 5f55997, tests 38/38); Block 2 FIX 2 done (commit f69c804, tests 44/44: Full/Lite model toggle with Full default on desktop, per-condition breakdown, attempt recorder with 3D capture). Attempt-data analysis (2026-11-13, 3,715 real frames, Full model, ~38 FPS real camera): BETA is SOLVED by the Full model (8 clean holds, 2D elbows 167-175 deg, never below threshold in-hold); 3D elbow angles read ~10 deg lower than 2D and are REJECTED for classification; DELTA is blocked by the wrist-gap enter threshold (his gathered gap median 0.44 SW vs enter 0.35); GAMMA never passed once — its two down-side conditions are geometrically impossible for a naturally hanging arm (down wrist midline median 0.64 SW vs limit 0.50; down wrist 0.24 SW above the hip line vs required at/below it). Next: Block 2 FIX 3 (data-computed thresholds below), then the formal 20-trial measurement. Recognition improvement ladder agreed with the user (2026-11-13): measurement -> Full model + 3D check (done, 3D rejected) -> RTMPose only if still insufficient, decided after the Block 3 fun gate.
 3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules, PLUS a tweak panel (sliders for overload rise time, pose hold time, similarity threshold, hitstop frames, shake gain, particle burst size; values persisted in localStorage; toggled with the T key; hidden by default and always hidden in the TV profile) (fun gate)
 4. First real Nightmare enemy + full HUD (per HUD rules) + art direction decision (style candidates are collected in the project notes; the user decides them in this block)
 5. Three enemy types + boss combo pattern
@@ -127,3 +128,31 @@ Required changes:
 
 Log a "Block 2 FIX 2" entry in SESSION-LOG.md (English): files changed, model file sizes, build/test results, screenshot check (docs/screens/block-2-fix2-start.png), handover checklist, and this user-test note:
 - User test: (1) switch the model toggle to Full and do BETA — does the skeleton stop warping? Report the 5s-average FPS on Full too. (2) With the recorder: record 5 attempts each of DELTA, GAMMA, BETA (hold each ~1s, return to neutral between attempts). (3) Download the attempts JSON and attach it in the project chat. Thresholds for FIX 3 will be computed from that data, including the 2D-vs-3D elbow comparison.
+
+---
+
+## Block 2 FIX 3 — data-computed thresholds for DELTA and GAMMA (do this before Block 3)
+
+Evidence: the user's attempt recording (3,715 frames, Full model, real camera) was analyzed frame-by-frame against this classifier. Full analysis is in the project notes (fix3-analysis). Findings:
+- BETA works on the Full model — no BETA changes in this block.
+- DELTA: in the wrist-gathered intent zone (gap <= 0.60 SW, 1,323 frames), 99% of the non-DELTA frames fail ONLY the wrist-gap enter check. His natural gathered gap: median 0.44 SW, p75 0.53. DELTA-labeled frames: median gap 0.29, max 0.45. Secondary: the right wrist sits further from the midline (|crossR| > 0.30 in 48% of failing frames; DELTA-frame median own-side offset -0.20 SW).
+- GAMMA: zero pass frames in the entire recording. His up side clears every up condition with large margins (above-nose ~0.9 vs 0.05 required; horizontal ~1.39 vs 0.55). BOTH down-side conditions fail in every attempt: down-wrist midline distance median 0.64 SW vs limit 0.50 (a naturally hanging arm rests at 0.6-0.7 SW — outside the shoulder line), and down wrist sits 0.24 SW ABOVE the hip line vs required at/below it.
+- 3D elbow angles read ~10 deg lower than 2D inside good BETA holds and would fail 9%/3% of in-hold frames at the 150 deg threshold (2D fails 0-1%). Classification stays on 2D angles — do not change that.
+
+Required changes (src/classifier.ts DEFAULT_THRESHOLDS + matching similarity score ranges):
+1. DELTA wrist distance: deltaWristDistanceEnter 0.35 -> 0.50; deltaWristDistanceExit 0.45 -> 0.62.
+2. DELTA midline: deltaWristMidlineEnter 0.30 -> 0.38; deltaWristMidlineExit 0.40 -> 0.48.
+3. ALPHA wrist distance (keep a signature gap above DELTA's new enter): alphaWristDistanceEnter 0.50 -> 0.55; alphaWristDistanceExit 0.45 -> 0.48. DELTA remains protected by POSE_PRIORITY (DELTA first) and by its own-side crossing cap (crossing <= 0.15), which a true X violates.
+4. GAMMA down midline: gammaDownMidlineEnter 0.50 -> 0.85; gammaDownMidlineExit 0.60 -> 0.95. (A T-pose arm sits at ~1.5 SW, so BETA still cannot pass as GAMMA.)
+5. GAMMA down below hip: gammaDownBelowHipEnter 0.0 -> -0.40; gammaDownBelowHipExit -0.10 -> -0.50.
+6. Similarity score ranges: re-center the soft-distance ranges of the changed conditions (DELTA gap, DELTA midline, GAMMA down-midline, GAMMA down-below-hip, ALPHA gap) so the user's measured medians score at least 0.7: DELTA gap 0.44, DELTA midline |x| 0.20-0.30, GAMMA down midline 0.64, GAMMA down below-hip -0.24.
+7. New unit tests:
+   - Synthetic DELTA with wrist gap 0.48 and slight crossing 0.10 -> DELTA, not ALPHA.
+   - Synthetic DELTA with wrist gap 0.44, right wrist at |x| 0.34 -> DELTA matches.
+   - Synthetic GAMMA (both orientations) with down wrist at |x| 0.65 and 0.25 SW above the hip line -> GAMMA matches.
+   - Synthetic BETA T-pose -> does NOT match GAMMA.
+   - Existing ALPHA tests keep passing with the new 0.55 enter (adjust synthetic fixtures if they used a gap between 0.50 and 0.55, and say so in the log).
+8. Calibration behavior unchanged (it scales enter thresholds within +/-20% of the NEW defaults). NO other thresholds change. `npm run build` and `npm test` must pass.
+
+Log a "Block 2 FIX 3" entry in SESSION-LOG.md (English): final constants, test results, screenshot check (docs/screens/block-2-fix3-start.png), handover checklist, and this user-test note:
+- User test (Full model): in practice mode try each pose 5 times and report the recognized counts — DELTA (gather both fists at the solar plexus; they do NOT need to touch), GAMMA (one arm up diagonal; let the other arm hang fully down by the thigh), BETA, ALPHA. If all four reach 5/5 or 4/5, run the formal Test mode (All, 20 trials per pose) and report the per-pose success rates.

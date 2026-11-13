@@ -216,11 +216,47 @@ describe('pose matching', () => {
 
   it('applies wrist distance/midline hysteresis for DELTA', () => {
     const features = makeFeatures({
-      left: { wrist: v(0.34, 0.4) },
-      right: { wrist: v(-0.1, 0.4) },
+      left: { wrist: v(0.44, 0.4) },
+      right: { wrist: v(-0.12, 0.4) },
     });
     expect(matchesPose(features, 'DELTA', false)).toBe(false);
     expect(matchesPose(features, 'DELTA', true)).toBe(true);
+  });
+
+  it('matches DELTA with a 0.48 SW gap and a slight 0.10 SW crossing', () => {
+    const features = makeFeatures({
+      left: { wrist: v(-0.1, 0.2), elbowAngle: 90 },
+      right: { wrist: v(0.1, 0.636), elbowAngle: 90 },
+    });
+    expect(matchesPose(features, 'DELTA', false)).toBe(true);
+    expect(matchesPose(features, 'ALPHA', false)).toBe(false);
+    expect(classifyPose(features, null)).toBe('DELTA');
+  });
+
+  it('matches DELTA with a 0.44 SW gap and the right wrist at 0.34 SW', () => {
+    const features = makeFeatures({
+      left: { wrist: v(0.1, 0.4) },
+      right: { wrist: v(-0.34, 0.4) },
+    });
+    expect(matchesPose(features, 'DELTA', false)).toBe(true);
+  });
+
+  it('matches GAMMA in both orientations with a hanging down wrist', () => {
+    const leftUp = makeFeatures({
+      left: { wrist: v(0.9, -0.7) },
+      right: { wrist: v(-0.65, 1.25) },
+    });
+    expect(matchesPose(leftUp, 'GAMMA', false)).toBe(true);
+
+    const rightUp = makeFeatures({
+      right: { wrist: v(-0.9, -0.7) },
+      left: { wrist: v(0.65, 1.25) },
+    });
+    expect(matchesPose(rightUp, 'GAMMA', false)).toBe(true);
+  });
+
+  it('does not match GAMMA for a BETA T-pose', () => {
+    expect(matchesPose(betaFeatures(), 'GAMMA', false)).toBe(false);
   });
 });
 
@@ -290,6 +326,52 @@ describe('PoseClassifier stability', () => {
   });
 });
 
+describe('evaluatePose measured medians', () => {
+  it('scores the recorded DELTA, GAMMA, and ALPHA medians at 0.7 or better', () => {
+    const delta = makeFeatures({
+      left: { wrist: v(0.1, 0.4) },
+      right: { wrist: v(-0.34, 0.4) },
+    });
+    const deltaEval = evaluatePose(delta, 'DELTA');
+    expect(
+      deltaEval.conditions.find((condition) => condition.id === 'delta-distance')
+        ?.score,
+    ).toBeGreaterThanOrEqual(0.7);
+    expect(
+      deltaEval.conditions.find(
+        (condition) => condition.id === 'delta-right-midline',
+      )?.score,
+    ).toBeGreaterThanOrEqual(0.7);
+
+    const gamma = makeFeatures({
+      left: { wrist: v(0.9, -0.7) },
+      right: { wrist: v(-0.64, 1.26) },
+    });
+    const gammaEval = evaluatePose(gamma, 'GAMMA');
+    expect(
+      gammaEval.conditions.find(
+        (condition) => condition.id === 'gamma-right-midline',
+      )?.score,
+    ).toBeGreaterThanOrEqual(0.7);
+    expect(
+      gammaEval.conditions.find(
+        (condition) => condition.id === 'gamma-right-down',
+      )?.score,
+    ).toBeGreaterThanOrEqual(0.7);
+
+    const alpha = makeFeatures({
+      left: { wrist: v(-0.275, 0.15), elbowAngle: 90 },
+      right: { wrist: v(0.275, 0.15), elbowAngle: 90 },
+    });
+    const alphaEval = evaluatePose(alpha, 'ALPHA');
+    expect(
+      alphaEval.conditions.find(
+        (condition) => condition.id === 'alpha-wrist-gap',
+      )?.score,
+    ).toBeGreaterThanOrEqual(0.7);
+  });
+});
+
 describe('evaluatePose condition details', () => {
   it('returns per-condition detail that matches the aggregate similarity', () => {
     for (const pose of POSE_IDS) {
@@ -336,7 +418,7 @@ describe('evaluatePose condition details', () => {
       (condition) => condition.id === 'alpha-wrist-gap',
     );
     expect(gap?.passed).toBe(true);
-    expect(gap?.requirement).toContain('0.50');
+    expect(gap?.requirement).toContain('0.55');
   });
 });
 

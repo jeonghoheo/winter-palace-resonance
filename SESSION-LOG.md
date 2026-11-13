@@ -138,3 +138,41 @@ Handover checklist (Block 2 FIX 2):
 7. Production screenshot check at 1280x720 — Built; path above.
 - User test: (1) Switch the model toggle to Full (it is the desktop default) and do BETA — does the skeleton stop warping? Report the 5s-average FPS on Full too. (2) With the recorder: select DELTA, record 5 attempts (~1s hold each, return to neutral between), Stop; repeat for GAMMA and BETA. (3) Download the attempts JSON and attach it in the project chat. FIX 3 thresholds will be computed from that data, including the 2D-vs-3D elbow comparison.
 - Not yet played by a person
+
+## Block 2 FIX 3 — data-computed thresholds for DELTA and GAMMA (2026-11-13)
+- Built: applied the thresholds computed from the user's 3,715-frame attempt recording, re-centered the soft similarity ranges for the changed conditions, and added the specified DELTA/GAMMA/BETA unit tests. No other thresholds changed. Classification remains on 2D angles (the 3D world-angle comparison is recorded but not used for matching).
+- Final constants changed in `src/classifier.ts`:
+  - DELTA wrist distance: enter 0.50 SW / exit 0.62 (was 0.35 / 0.45).
+  - DELTA wrist midline: enter 0.38 SW / exit 0.48 (was 0.30 / 0.40).
+  - ALPHA wrist distance: enter 0.55 SW / exit 0.48 (was 0.50 / 0.45).
+  - GAMMA down-wrist midline: enter 0.85 SW / exit 0.95 (was 0.50 / 0.60).
+  - GAMMA down wrist below hip: enter -0.40 SW / exit -0.50 (was 0.00 / -0.10).
+  - All other thresholds are unchanged (BETA stays as tuned in FIX 1; ALPHA crossing/band, DELTA own-side cap -0.15, GAMMA up conditions, elbow/visibility/stability unchanged).
+- Similarity re-centering (condition score = 1 - soft distance):
+  - ALPHA gap: comfortable = enter + 0.10 (0.65 SW), far = enter - 0.30 (0.25 SW); the 0.55 enter scores 0.75.
+  - DELTA gap: comfortable = enter * 0.7 (0.35 SW), far = enter * 1.9 (0.95 SW); the measured 0.44 SW median scores 0.85.
+  - DELTA midline: comfortable = enter * 0.8 (0.304 SW), far = enter * 2.4 (0.912 SW); the measured 0.20-0.30 SW medians score 1.0.
+  - GAMMA down midline: comfortable = enter * 0.88 (0.748 SW), far = enter * 1.65 (1.4025 SW); the measured 0.64 SW median scores 1.0.
+  - GAMMA down below hip: comfortable = enter + 0.25 (-0.15 SW), far = enter - 0.40 (-0.80 SW); the measured -0.24 SW median scores 0.86.
+- Tests: `npm test` passes — 5 files, 49 tests (was 44). New coverage: DELTA gap 0.48 + slight 0.10 crossing -> DELTA not ALPHA; DELTA gap 0.44 with right wrist |x| 0.34 -> DELTA; GAMMA both orientations with down wrist |x| 0.65 and 0.25 SW above the hip -> GAMMA; BETA T-pose -> not GAMMA; measured-median similarity scores >= 0.7; DELTA hysteresis updated for the new enter/exit values. The existing ALPHA fixtures use a 0.60 SW gap, so they did not need adjusting for the new 0.55 enter.
+- Calibration behavior unchanged: it still scales enter thresholds within +/-20% of the NEW defaults. Calibration unit-test expectations were updated for the new DELTA defaults (extreme clamp 0.60/0.456, realistic 0.40/0.33).
+- Build: `npm run build` passes (TypeScript + Vite).
+- Headless verification (production build, Full model, static T-pose image): BETA still reports 99% with all six conditions PASS; the live DELTA condition list shows the new requirements (gap <= 0.50 SW, midline <= 0.38 SW, own-side >= -0.15 SW); the live GAMMA list shows down midline <= 0.85 SW and down-wrist >= -0.40 SW. Headless 5s-average FPS on Full was ~36.6 (current 39); real-camera measurements remain the user test.
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-fix3-start.png` (production build, initial pre-camera screen, 1280x720, Full selected). Checked: no overflow, overlap, or off-screen controls.
+- Files changed: `src/classifier.ts`, `src/classifier.test.ts`, `src/calibration.test.ts`, `SESSION-LOG.md`, plus screenshot `docs/screens/block-2-fix3-start.png`.
+
+Handover checklist (Block 2 FIX 3):
+1. DELTA wrist distance enter 0.50 / exit 0.62 — Built; matching, similarity range, and tests updated.
+2. DELTA midline enter 0.38 / exit 0.48 — Built; matching, similarity range, and tests updated.
+3. ALPHA wrist distance enter 0.55 / exit 0.48 — Built; 0.60 SW fixtures still pass (no fixture adjustment needed), similarity range re-centered.
+4. GAMMA down midline enter 0.85 / exit 0.95 — Built; matching, similarity range, and tests updated.
+5. GAMMA down below hip enter -0.40 / exit -0.50 — Built; matching, similarity range, and tests updated.
+6. Similarity ranges re-centered so the recorded medians score >= 0.7 — Built; verified by unit tests (DELTA gap 0.85, DELTA midline 1.0, GAMMA down midline 1.0, GAMMA down below hip 0.86, ALPHA enter 0.75).
+7. New unit tests — Built; 49/49 tests pass.
+8. Calibration unchanged, +/-20% of the NEW defaults; no other thresholds changed — Built. 3D angles remain captured but not used for classification — Built (unchanged).
+- `npm run build` passes — Built.
+- `npm test` passes — Built.
+- Production screenshot check at 1280x720 — Built; path above.
+- User test (Full model): in practice mode try each pose 5 times and report the recognized counts — DELTA (gather both fists at the solar plexus; they do NOT need to touch), GAMMA (one arm up diagonal; let the other arm hang fully down by the thigh), BETA, ALPHA. If all four reach 5/5 or 4/5, run the formal Test mode (All, 20 trials per pose) and report the per-pose success rates.
+- Not yet played by a person

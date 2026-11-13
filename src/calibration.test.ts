@@ -85,8 +85,8 @@ describe('thresholdsFromCalibration', () => {
     expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.54, 6);
     expect(thresholds.betaWristHorizontalEnter).toBeCloseTo(1.2, 6);
     expect(thresholds.gammaUpHorizontalEnter).toBeCloseTo(0.66, 6);
-    expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.42, 6);
-    expect(thresholds.deltaWristMidlineEnter).toBeCloseTo(0.36, 6);
+    expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.6, 6);
+    expect(thresholds.deltaWristMidlineEnter).toBeCloseTo(0.456, 6);
   });
 
   it('moves thresholds toward realistic measured values', () => {
@@ -111,7 +111,7 @@ describe('thresholdsFromCalibration', () => {
     expect(thresholds.elbowBentEnter).toBeCloseTo(130, 6);
     expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.36, 6);
     expect(thresholds.betaWristHorizontalEnter).toBeCloseTo(0.95, 6);
-    expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.37, 6);
+    expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.4, 6);
     expect(thresholds.deltaWristMidlineEnter).toBeCloseTo(0.33, 6);
   });
 });
