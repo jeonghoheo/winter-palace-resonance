@@ -237,3 +237,27 @@ Handover checklist (Block 2 FIX 5):
 - Production screenshot check at 1280x720 — Built; path above.
 - User test (all SEATED at your desk, your normal camera setup — do not adjust anything for us): (1) press Set baseline, sit neutral for 1.5s. (2) Practice each pose 3 times, including a BETA where your hands go slightly out of frame. (3) Then the formal measurement: calibration once, Test mode (All, 20 trials per pose), report per-pose success % and average recognition times. The 90% criterion is judged on THIS seated run.
 - Not yet played by a person
+
+## Housekeeping — GitHub publish (2026-11-13)
+- Pre-push checks:
+  - `.gitignore` already covers `node_modules/` and `dist/` (no changes needed).
+  - No `.env` files are tracked. `git grep -I -n -i -E '\b(KEY|TOKEN|SECRET|PASSWORD)\b'` over tracked text files returned no matches.
+  - Largest tracked file is `public/wasm/vision_wasm_internal.wasm` at 14,665,716 bytes. The bundled models are `pose_landmarker_lite.task` (5,777,746 bytes) and `pose_landmarker_full.task` (9,398,198 bytes). All tracked files are well below GitHub's 100MB limit.
+- Added `LICENSE` (standard MIT text, Copyright (c) 2026 Heo Jeongho) and a minimal `README.md` (title, one-line description, Block 2 work-in-progress status, `npm install` / `npm run dev`, MIT note). There was no pre-existing README to replace.
+- Committed the pre-push changes as `60a3c58244b21f72c38c9c6c532b55c1116cdac6` — "Housekeeping: gitignore check, MIT license, README".
+- Created the public repository `winter-palace-resonance` under the authenticated user (`jeonghoheo`) with `gh repo create winter-palace-resonance --public --source=. --remote=origin --push`. The repository was created, but the first HTTPS push failed with HTTP 400; it succeeded on retry with a larger per-command HTTP buffer (`git -c http.postBuffer=524288000 push -u origin main`) without changing persistent git config.
+- Repository URL: https://github.com/jeonghoheo/winter-palace-resonance
+- Pushed HEAD hash: `60a3c58244b21f72c38c9c6c532b55c1116cdac6` (branch `main`, upstream `origin/main`).
+- Verification: `git ls-remote origin refs/heads/main` returned the same hash as local HEAD at that point; `gh repo view` reports PUBLIC visibility and default branch `main`.
+- The SESSION.md working rule was amended to require committing and pushing at the end of each future block.
+
+Handover checklist (Housekeeping — GitHub publish):
+1. `.gitignore` covers `node_modules/` and `dist/` — Built (already present; verified).
+2. No secrets or `.env` files in tracked files; KEY/TOKEN/SECRET/PASSWORD grep — Built (no matches).
+3. Every tracked file under the 100MB GitHub limit — Built (largest 14.7MB).
+4. MIT `LICENSE` with Copyright (c) 2026 Heo Jeongho — Built.
+5. Minimal project `README.md` — Built.
+6. Pre-push changes committed as "Housekeeping: gitignore check, MIT license, README" — Built (`60a3c58`).
+7. Public GitHub repo created, `origin` added, `main` pushed and tracking `origin/main` — Built; URL recorded above.
+8. Remote HEAD equals local HEAD at push time — Built/verified (`60a3c58`).
+9. Working rule updated for future commits and pushes — Built (follow-up sync commit).
