@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Winter Palace: Resonance — Pose Test</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Winter Palace: Resonance</h1>
+        <p class="subtitle">Block 1 — camera, pose tracking, FPS</p>
+      </header>
+
+      <main>
+        <div id="placeholder" class="placeholder">Camera is off. Click Start.</div>
+
+        <div id="stage" class="stage" hidden>
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+        </div>
+
+        <section class="controls">
+          <button id="start" type="button">Start</button>
+          <fieldset id="resolution-control">
+            <legend>Capture resolution</legend>
+            <label>
+              <input type="radio" name="resolution" value="640x480" checked />
+              640×480
+            </label>
+            <label>
+              <input type="radio" name="resolution" value="1280x720" />
+              1280×720
+            </label>
+          </fieldset>
+        </section>
+
+        <section class="stats" aria-live="polite">
+          <div class="stat">
+            <span class="label">FPS (current)</span>
+            <span id="fps-current" class="value">--</span>
+          </div>
+          <div class="stat">
+            <span class="label">FPS (5s avg)</span>
+            <span id="fps-average" class="value">--</span>
+          </div>
+          <div class="stat">
+            <span class="label">Landmark status</span>
+            <span id="landmark-status" class="value">not detected</span>
+          </div>
+          <div class="stat">
+            <span class="label">Capture</span>
+            <span id="capture-status" class="value">640×480</span>
+          </div>
+          <div class="stat">
+            <span class="label">Delegate</span>
+            <span id="delegate-status" class="value">--</span>
+          </div>
+        </section>
+
+        <p id="error" class="error" role="alert" hidden></p>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
