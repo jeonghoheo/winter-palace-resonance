@@ -63,40 +63,36 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 ## Roadmap (context only — do not build ahead)
 
 1. Camera + pose tracking + FPS measurement — DONE (Block 1 + FIX, commits 2892279 / c137fa7). Measured on the user's MacBook Air M1 in Brave with a real camera: 5s-average FPS 60.2 at 640x480 and 58.4 at 1280x720; landmarks detected. Performance baseline confirmed — large headroom over the 25 FPS effects criterion.
-2. 4-pose classifier + personal calibration + recognition-rate test mode (this block)
+2. 4-pose classifier + personal calibration + recognition-rate test mode — code done (commit e85d758); first human playtest (2026-11-13): ALPHA works well, BETA too strict, DELTA misread as ALPHA, GAMMA unclear/hard, and the user suspects BETA/GAMMA failures are partly framing (arms leaving the narrow MacBook webcam frame). See Block 2 FIX below; full 20-trial measurement still pending.
 3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules, PLUS a tweak panel (sliders for overload rise time, pose hold time, similarity threshold, hitstop frames, shake gain, particle burst size; values persisted in localStorage; toggled with the T key; hidden by default and always hidden in the TV profile) (fun gate)
-4. First real Nightmare enemy + full HUD (per HUD rules)
+4. First real Nightmare enemy + full HUD (per HUD rules) + art direction decision (style candidates are collected in the project notes; the user decides them in this block)
 5. Three enemy types + boss combo pattern
 6. Setup/start screens, story cards, final audio (Kenney CC0 first, per Sound rules) + CREDITS.md
 7. Phone/TV profiles, adaptive performance, public deployment, real-phone test
 
 ---
 
-## Block 2 — Pose classifier, calibration, recognition test mode
+## Block 2 FIX — classifier tuning from the first human playtest (do this before Block 3)
 
-Goal: turn the raw landmarks from Block 1 into reliable pose judgments, and measure the recognition rate per pose. No game loop yet.
+Playtest feedback from the user (2026-11-13, real camera, real person):
+- ALPHA: recognized well.
+- BETA: recognized only with effort — thresholds too strict.
+- DELTA: when the user performs DELTA, ALPHA fires instead.
+- GAMMA: hard to recognize, and the pose intent was not obvious to the user.
+- The user also suspects BETA/GAMMA failures are partly a framing problem: at MacBook distance his outstretched/raised hands leave the camera frame (the MacBook webcam FOV is narrow).
 
-Build:
-1. `src/classifier.ts` — pure functions over RAW landmarks (no smoothing on this input):
-   - Features: elbow angles L/R (shoulder-elbow-wrist), wrist and elbow positions normalized by shoulder width (SW), origin at mid-shoulder, y down as in image coordinates. Note in code comments which side convention is used (raw image coordinates vs the mirrored preview) and keep it consistent everywhere.
-   - Visibility gate: nose, both shoulders, both elbows, both wrists must have visibility >= 0.5, otherwise output NO_POSE.
-   - Per-pose conditions with hysteresis (enter threshold stricter than exit). Initial values (all tunable constants at the top of the file):
-     - Elbow "straight": enter >= 160 deg, exit <= 150 deg. Elbow "bent": <= 120 deg.
-     - ALPHA: left wrist crosses the midline to the opposite side AND right wrist crosses to the opposite side (in raw image x), both wrists vertically between chin and mid-torso, both elbows bent.
-     - BETA: both elbows straight, both wrists within ±0.35 SW vertically of their shoulder, each wrist at least 1.1 SW horizontally away from its shoulder.
-     - GAMMA: one wrist above nose level and at least 0.7 SW horizontally from midline, the other wrist below hip level and within 0.5 SW of midline; the two sides must be opposite.
-     - DELTA: wrist-to-wrist distance <= 0.35 SW, both wrists within 0.3 SW of the midline, both wrists vertically between shoulder line and hip line, NOT crossed (wrists keep their own sides, unlike ALPHA).
-   - Stickiness: once a pose is active it stays active until its own exit conditions fail; when several poses match at once, prefer the active one, otherwise DELTA > ALPHA > GAMMA > BETA.
-   - Stability: a pose counts as RECOGNIZED after it is the classifier output for 0.3s continuously (timestamp-based, not frame-count-based).
-   - Similarity: for a chosen target pose, a continuous 0-100 score from the normalized per-condition distances (document the formula in comments). Also return the single worst condition and which joint it belongs to (for the one-joint hint).
-2. Practice UI (extend the Block 1 page):
-   - Large current-pose label (ALPHA/BETA/GAMMA/DELTA/NO_POSE) and, when a target pose is selected, the similarity % as a big number + bar, plus the one-joint hint text when similarity < 80.
-   - Target pose selector (4 buttons) for free practice.
-   - Keep the FPS meter and resolution toggle from Block 1.
-3. Calibration: a "Calibrate" flow — stand neutral 1s, then hold each of the 4 poses 1s when prompted. Store per-pose median feature values in localStorage and use them to adjust the classifier thresholds, bounded to ±20% of the defaults. A "Reset calibration" button restores defaults. If calibration data exists, show "calibrated" on the page.
-4. Test mode: pick a pose (or All), run 20 trials. Each trial: show the target, wait until RECOGNIZED (success, record time-to-recognize) or 3s timeout (fail). If the skeleton is lost mid-trial, pause that trial's timer. Results table per pose: trials, successes, success %, average recognition time. Button to download the results as JSON.
-5. Tests: add vitest and unit tests for the pure math (angle calculation, normalization, each pose's enter/exit on synthetic landmark sets, hysteresis behavior). `npm test` must pass.
+Required changes (src/classifier.ts unless noted):
+1. ALPHA vs DELTA disambiguation by wrist distance FIRST: the true signature of DELTA is "wrists together", of ALPHA "wrists apart on crossed sides".
+   - If wrist-to-wrist distance <= 0.45 SW, ALPHA must NOT activate, no matter how far the wrists have crossed the midline (hands gathered at the center naturally overshoot the midline slightly).
+   - ALPHA gains a condition: wrist-to-wrist distance >= 0.50 SW (an X has separated hands; hands near the opposite shoulders).
+   - DELTA's own-side condition is relaxed: a wrist may overshoot the midline by up to 0.15 SW and still count as DELTA, as long as the wrist-distance condition holds.
+   - Update the similarity scoring for ALPHA and DELTA to match the new conditions, and add unit tests: (a) synthetic DELTA with wrists together and slightly crossed -> DELTA, not ALPHA; (b) synthetic ALPHA with wrists apart and crossed -> ALPHA.
+2. BETA relaxed (real elbows rarely reach a true 160 degrees on camera): elbow straight enter >= 150 deg / exit >= 140; wrist vertical tolerance enter 0.45 SW / exit 0.55; wrist horizontal distance enter 1.00 SW / exit 0.90.
+3. GAMMA relaxed: up-wrist horizontal enter 0.55 SW / exit 0.45; up-wrist vertical passes if it is above nose level OR at least 0.90 SW above the shoulder line; down-wrist passes at hip level (enter margin 0.00 SW below the hip line).
+4. Practice-mode debug readout (src/main.ts + index.html): one small line under the similarity display showing live values — elbow angle L / R (degrees), wrist distance (SW), and each wrist's crossing offset from the midline (SW, signed). This is a tuning aid; keep it visually minor.
+5. Framing help (practice and test modes):
+   - Draw a framing guide rectangle on the overlay: the zone the player should occupy — head near the top margin, hips above the bottom margin, and enough side margin that a T-pose fits. Show it whenever tracking is running in practice/test mode.
+   - When the upper body is tracked but a wrist landmark is within 5% of any frame edge or its visibility is below 0.5, show a specific warning chip naming the side from the user's mirrored point of view (e.g., "Your left hand is out of frame — step back"). Framing problems must be distinguishable from pose errors; this warning takes precedence over the generic NO_POSE display for that case.
+6. Keep calibration behavior unchanged (it adjusts enter thresholds within +/-20% of the NEW defaults). `npm run build` and `npm test` must pass, with the new/updated tests included.
 
-Verify before logging: `npm run build` passes, `npm test` passes, screenshot check per the Working rules, handover checklist in the log.
-
-Log in SESSION-LOG.md (English): files created/changed, the final threshold constants, build + test results, screenshot path, checklist, and a "user test" note: run calibration once, then run Test mode (All, 20 trials) and report the per-pose success % and average recognition times shown on screen.
+Log a "Block 2 FIX" entry in SESSION-LOG.md (English): the final constant values changed, test results, checklist, and a user-test note: stand far enough back that the whole T-pose fits inside the framing guide, then in practice mode try DELTA 5 times (ALPHA must not fire), BETA 5 times, GAMMA 5 times, and report how many of each were recognized.

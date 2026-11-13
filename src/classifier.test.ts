@@ -4,6 +4,7 @@ import {
   DEFAULT_THRESHOLDS,
   POSE_IDS,
   PoseClassifier,
+  classifyPose,
   extractFeatures,
   jointAngle,
   matchesPose,
@@ -56,8 +57,8 @@ function makeFeatures(overrides: FeatureOverrides = {}): PoseFeatures {
 
 const alphaFeatures = (): PoseFeatures =>
   makeFeatures({
-    left: { wrist: v(-0.2, 0.2), elbowAngle: 90 },
-    right: { wrist: v(0.2, 0.2), elbowAngle: 90 },
+    left: { wrist: v(-0.3, 0.15), elbowAngle: 90 },
+    right: { wrist: v(0.3, 0.15), elbowAngle: 90 },
   });
 
 const betaFeatures = (): PoseFeatures =>
@@ -169,11 +170,37 @@ describe('pose matching', () => {
 
   it('applies wrist height/reach hysteresis for BETA', () => {
     const features = makeFeatures({
-      left: { wrist: v(1.55, 0.4), elbowAngle: 175 },
-      right: { wrist: v(-1.55, 0.4), elbowAngle: 175 },
+      left: { wrist: v(1.45, 0.5), elbowAngle: 175 },
+      right: { wrist: v(-1.45, 0.5), elbowAngle: 175 },
     });
     expect(matchesPose(features, 'BETA', false)).toBe(false);
     expect(matchesPose(features, 'BETA', true)).toBe(true);
+  });
+
+  it('accepts a GAMMA up wrist that clears the shoulder line even below the nose', () => {
+    const features = makeFeatures({
+      nose: v(0, -1.4),
+      left: { wrist: v(0.6, -0.95) },
+      right: { wrist: v(0.1, 1.5) },
+    });
+    expect(matchesPose(features, 'GAMMA', false)).toBe(true);
+  });
+
+  it('does not activate ALPHA when the wrists are together and slightly crossed', () => {
+    const features = makeFeatures({
+      left: { wrist: v(-0.08, 0.4) },
+      right: { wrist: v(0.08, 0.4) },
+    });
+    expect(matchesPose(features, 'ALPHA', false)).toBe(false);
+    expect(matchesPose(features, 'DELTA', false)).toBe(true);
+    expect(classifyPose(features, null)).toBe('DELTA');
+  });
+
+  it('keeps separated crossed wrists as ALPHA', () => {
+    const features = alphaFeatures();
+    expect(matchesPose(features, 'ALPHA', false)).toBe(true);
+    expect(matchesPose(features, 'DELTA', false)).toBe(false);
+    expect(classifyPose(features, null)).toBe('ALPHA');
   });
 
   it('applies height hysteresis for GAMMA', () => {

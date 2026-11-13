@@ -173,3 +173,54 @@ export class SkeletonDrawer {
     }
   }
 }
+
+/**
+ * Overlay-only framing zone: head near the top margin, hips above the bottom
+ * margin, and 12% side margins so a T-pose has room. Deliberately textless
+ * because the overlay canvas is CSS-mirrored.
+ */
+export function drawFramingGuide(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): void {
+  if (width <= 0 || height <= 0) return;
+
+  const marginX = width * 0.12;
+  const top = height * 0.08;
+  const bottom = height * 0.9;
+  const x = marginX;
+  const y = top;
+  const w = width - marginX * 2;
+  const h = bottom - top;
+
+  ctx.save();
+
+  ctx.setLineDash([Math.max(6, height * 0.02), Math.max(5, height * 0.014)]);
+  ctx.lineWidth = Math.max(1.5, height * 0.003);
+  ctx.strokeStyle = 'rgba(126, 240, 255, 0.28)';
+  ctx.strokeRect(x, y, w, h);
+
+  // Solid corner brackets make the zone readable against bright video.
+  ctx.setLineDash([]);
+  ctx.lineWidth = Math.max(2, height * 0.005);
+  ctx.strokeStyle = 'rgba(126, 240, 255, 0.55)';
+  const corner = Math.min(w, h) * 0.06;
+
+  const corners: ReadonlyArray<readonly [number, number, number, number]> = [
+    [x, y, 1, 1],
+    [x + w, y, -1, 1],
+    [x, y + h, 1, -1],
+    [x + w, y + h, -1, -1],
+  ];
+
+  for (const [cx, cy, sx, sy] of corners) {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * corner, cy);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(cx, cy + sy * corner);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}

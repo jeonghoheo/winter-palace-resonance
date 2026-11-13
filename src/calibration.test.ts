@@ -78,13 +78,13 @@ describe('thresholdsFromCalibration', () => {
     });
     const thresholds = thresholdsFromCalibration(data);
 
-    expect(thresholds.elbowStraightEnter).toBeCloseTo(128, 6);
-    expect(thresholds.elbowStraightExit).toBeCloseTo(118, 6);
+    expect(thresholds.elbowStraightEnter).toBeCloseTo(120, 6);
+    expect(thresholds.elbowStraightExit).toBeCloseTo(110, 6);
     expect(thresholds.elbowBentEnter).toBeCloseTo(144, 6);
     expect(thresholds.elbowBentExit).toBeCloseTo(156, 6);
-    expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.42, 6);
-    expect(thresholds.betaWristHorizontalEnter).toBeCloseTo(1.32, 6);
-    expect(thresholds.gammaUpHorizontalEnter).toBeCloseTo(0.84, 6);
+    expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.54, 6);
+    expect(thresholds.betaWristHorizontalEnter).toBeCloseTo(1.2, 6);
+    expect(thresholds.gammaUpHorizontalEnter).toBeCloseTo(0.66, 6);
     expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.42, 6);
     expect(thresholds.deltaWristMidlineEnter).toBeCloseTo(0.36, 6);
   });
@@ -109,7 +109,7 @@ describe('thresholdsFromCalibration', () => {
     expect(thresholds.elbowStraightEnter).toBeCloseTo(145, 6);
     expect(thresholds.elbowStraightExit).toBeCloseTo(135, 6);
     expect(thresholds.elbowBentEnter).toBeCloseTo(130, 6);
-    expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.35, 6);
+    expect(thresholds.betaWristVerticalEnter).toBeCloseTo(0.36, 6);
     expect(thresholds.betaWristHorizontalEnter).toBeCloseTo(0.95, 6);
     expect(thresholds.deltaWristDistanceEnter).toBeCloseTo(0.37, 6);
     expect(thresholds.deltaWristMidlineEnter).toBeCloseTo(0.33, 6);

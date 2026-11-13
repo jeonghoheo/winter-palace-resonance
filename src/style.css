@@ -327,6 +327,27 @@ fieldset label {
   transition: width 80ms linear;
 }
 
+.debug-readout {
+  margin: 6px 0 0;
+  color: #8ea0c4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.framing-warning {
+  display: inline-block;
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #b8792a;
+  border-radius: 999px;
+  background: rgba(255, 180, 80, 0.16);
+  color: #ffd79a;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .hint {
   margin: 10px 0 0;
   color: #ffd479;

@@ -1,5 +1,5 @@
 import './style.css';
-import { SkeletonDrawer } from './draw';
+import { SkeletonDrawer, drawFramingGuide } from './draw';
 import { PoseTracker, type Delegate, type PoseFrame } from './pose';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
@@ -7,6 +7,8 @@ import {
   PoseClassifier,
   extractFeatures,
   poseSimilarity,
+  wristCrossingOffset,
+  wristGap,
   type Classification,
   type PoseFeatures,
   type PoseId,
@@ -20,6 +22,7 @@ import {
   thresholdsFromCalibration,
   type CalibrationData,
 } from './calibration';
+import { detectFramingWarning } from './framing';
 import {
   RecognitionTest,
   TRIAL_TIMEOUT_MS,
@@ -75,6 +78,8 @@ const currentPoseLabel = requireElement<HTMLSpanElement>('#current-pose');
 const similarityValue = requireElement<HTMLSpanElement>('#similarity-value');
 const similarityBar = requireElement<HTMLDivElement>('#similarity-bar');
 const similarityFill = requireElement<HTMLDivElement>('#similarity-fill');
+const debugReadout = requireElement<HTMLParagraphElement>('#debug-readout');
+const framingWarning = requireElement<HTMLParagraphElement>('#framing-warning');
 const poseHint = requireElement<HTMLParagraphElement>('#pose-hint');
 const calibrationBadge = requireElement<HTMLSpanElement>('#calibration-badge');
 const calibrateButton = requireElement<HTMLButtonElement>('#calibrate');
@@ -255,21 +260,48 @@ function setBarWidth(fill: HTMLElement, percent: number): void {
   fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
 }
 
+function formatSigned(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
 function updatePracticeUi(
   features: PoseFeatures | null,
   classification: Classification,
+  warning: string | null,
 ): void {
   currentPoseLabel.textContent = classification.label;
   currentPoseLabel.dataset.pose = classification.label;
   currentPoseLabel.classList.toggle('recognized', classification.recognized);
 
+  framingWarning.hidden = warning === null;
+  framingWarning.textContent = warning ?? '';
+
+  if (features) {
+    debugReadout.textContent =
+      `elbow L ${features.left.elbowAngle.toFixed(0)}° / R ${features.right.elbowAngle.toFixed(0)}° · ` +
+      `wrist gap ${wristGap(features).toFixed(2)} SW · ` +
+      `cross L ${formatSigned(
+        wristCrossingOffset(features.left.wrist.x, features.leftSideSign),
+      )} / R ${formatSigned(
+        wristCrossingOffset(features.right.wrist.x, features.rightSideSign),
+      )}`;
+  } else {
+    debugReadout.textContent =
+      'elbow L -- / R -- · wrist gap -- · cross L -- / R --';
+  }
+
   if (!features) {
     similarityValue.textContent = '--%';
     setBarWidth(similarityFill, 0);
     similarityBar.setAttribute('aria-valuenow', '0');
-    poseHint.hidden = false;
-    poseHint.textContent =
-      'Step back so your nose, shoulders, elbows, and wrists are all visible.';
+    if (!warning) {
+      poseHint.hidden = false;
+      poseHint.textContent =
+        'Step back so your nose, shoulders, elbows, and wrists are all visible.';
+    } else {
+      poseHint.hidden = true;
+      poseHint.textContent = '';
+    }
     return;
   }
 
@@ -278,7 +310,11 @@ function updatePracticeUi(
   setBarWidth(similarityFill, similarity.score);
   similarityBar.setAttribute('aria-valuenow', String(similarity.score));
 
-  if (similarity.score < 80) {
+  // Framing problems take precedence over the generic pose hint.
+  if (warning) {
+    poseHint.hidden = true;
+    poseHint.textContent = '';
+  } else if (similarity.score < 80) {
     poseHint.hidden = false;
     poseHint.textContent = `${similarity.worst.joint} — ${similarity.worst.hint}`;
   } else {
@@ -303,8 +339,9 @@ function handleFrame(frame: PoseFrame): void {
     features,
     frame.timestampMs,
   );
+  const framingMessage = detectFramingWarning(landmarks);
 
-  updatePracticeUi(features, classification);
+  updatePracticeUi(features, classification, framingMessage);
 
   if (calibrationSession) {
     updateCalibration(features, frame.timestampMs);
@@ -318,6 +355,10 @@ function handleFrame(frame: PoseFrame): void {
   }
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (state === 'running' && canvas.width > 0 && canvas.height > 0) {
+    drawFramingGuide(ctx, canvas.width, canvas.height);
+  }
 
   if (landmarks && canvas.width > 0 && canvas.height > 0) {
     drawer.draw(

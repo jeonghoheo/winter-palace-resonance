@@ -75,3 +75,38 @@ Handover checklist (Block 2):
 - Acceptance still requiring the user: real-camera per-pose recognition rate (>=90% over 20 tries), real-person calibration quality, and real-camera ALPHA/GAMMA/DELTA behavior — Not assessed (only BETA was exercised with a real-person image; the other poses are covered by synthetic unit tests).
 - User test (manual): run calibration once (neutral, then hold each prompted pose for 1s), then run Test mode with All and 20 trials per pose. Report the per-pose success % and average recognition times shown in the results table (and optionally download the JSON). Also check that the one-joint hint matches the joint that feels most off.
 - Not yet played by a person
+
+## Block 2 FIX — classifier tuning from the first human playtest (2026-11-13)
+- Built: wrist-distance-first ALPHA/DELTA disambiguation, relaxed BETA and GAMMA thresholds, a live debug readout under the similarity bar, and framing help (guide rectangle plus a mirrored-side warning chip).
+- ALPHA vs DELTA: ALPHA now requires a wrist-to-wrist gap of >=0.50 SW enter / >=0.45 SW exit, so gathered hands cannot activate ALPHA even when they overshoot the midline. DELTA own-side tolerance was relaxed to -0.15 SW enter / -0.25 SW exit; the wrist-distance condition (<=0.35 enter / <=0.45 exit) still has to hold. Similarity for ALPHA includes a "spread your wrists" condition, and DELTA's own-side conditions are scored with the relaxed tolerance.
+- Final constants changed in `src/classifier.ts`:
+  - Elbow straight: enter 150 deg / exit 140 (was 160 / 150).
+  - ALPHA wrist distance: enter 0.50 SW / exit 0.45 (new condition).
+  - DELTA own side: enter -0.15 SW / exit -0.25 (was 0.02 / -0.02).
+  - BETA wrist vertical: enter 0.45 SW / exit 0.55 (was 0.35 / 0.45).
+  - BETA wrist horizontal: enter 1.00 SW / exit 0.90 (was 1.10 / 1.00).
+  - GAMMA up horizontal: enter 0.55 SW / exit 0.45 (was 0.70 / 0.60).
+  - GAMMA up vertical: above nose enter 0.05 / exit -0.05 (unchanged) OR above shoulder line enter 0.90 SW / exit 0.80 (new).
+  - GAMMA down wrist: enter 0.00 SW below the hip / exit -0.10 (was 0.05 / -0.05).
+  - Elbow bent, ALPHA crossing/band, GAMMA down midline, DELTA distance/midline/band, visibility 0.5 and 300 ms stability are unchanged.
+- Debug readout: small monospace line under the similarity display showing elbow L/R (degrees), wrist gap (SW), and signed crossing offsets L/R (positive = crossed past the midline to the far side).
+- Framing help: `src/framing.ts` detects a tracked upper body (nose + shoulders visible) with a wrist that is missing, below 0.5 visibility, or within 5% of any frame edge, and returns a message using the player's anatomical side (correct for the mirrored preview). The practice UI shows it as a warning chip and suppresses the generic NO_POSE hint for that frame. A dashed framing rectangle with corner brackets is drawn on the overlay whenever tracking is running (practice/test UI visible); it uses a 12% side margin, 8% top margin, and 10% bottom margin.
+- Files changed: `src/classifier.ts`, `src/main.ts`, `src/draw.ts`, `index.html`, `src/style.css`, `src/classifier.test.ts`, `src/calibration.test.ts`, `SESSION-LOG.md`; new `src/framing.ts`, `src/framing.test.ts`; new screenshot `docs/screens/block-2-fix-start.png`.
+- Build: `npm run build` passes (TypeScript + Vite).
+- Tests: `npm test` passes — 4 files, 38 tests. New/updated coverage: ALPHA/DELTA wrist-distance disambiguation (gathered + slightly crossed -> DELTA, not ALPHA; separated crossed -> ALPHA), relaxed BETA enter/exit hysteresis, GAMMA shoulder-line branch, relaxed calibration thresholds, and framing warning cases (left/right/both, low visibility, upper body untracked).
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-fix-start.png` (production build, initial pre-camera screen, 1280x720). Checked: no overflow, overlap, or off-screen controls.
+- Additional headless verification: static T-pose image through the fake camera still reports BETA, draws the skeleton, shows the debug line (e.g. `elbow L 170° / R 176° · wrist gap 4.66 SW · cross L -2.35 / R -2.31`), and draws the framing guide. No framing warning appeared for that framing because MediaPipe kept both wrists inside the frame; the warning logic itself is unit-tested.
+
+Handover checklist (Block 2 FIX):
+1. ALPHA vs DELTA wrist-distance-first rule; ALPHA gap >=0.50 SW; DELTA own-side overshoot up to 0.15 SW; similarity updated — Built; covered by the new unit tests. Live DELTA-with-real-camera behavior is Not assessed.
+2. BETA relaxed to elbow 150/140, vertical 0.45/0.55, horizontal 1.00/0.90 — Built; constants and tests updated. Live BETA recognition on the real camera is Not assessed.
+3. GAMMA relaxed to up horizontal 0.55/0.45, up vertical above nose OR >=0.90 SW above shoulders, down wrist at hip level — Built; synthetic tests include the shoulder-line branch. Live GAMMA recognition is Not assessed.
+4. Practice debug readout for elbow angles, wrist gap, and signed crossing offsets — Built; verified live in headless Chrome.
+5. Framing guide rectangle in practice/test mode; wrist edge/visibility warning with mirrored-side naming and precedence over the generic hint — Built. The guide is visible in the headless practice run. Warning detection is unit-tested; it was not triggered live by the static test image, so the live warning state is Not assessed.
+6. Calibration behavior unchanged, adjusting enter thresholds within +/-20% of the NEW defaults — Built; calibration derivation tests updated and passing.
+7. `npm run build` passes — Built.
+8. `npm test` passes — Built (38/38).
+9. Production screenshot check at 1280x720 — Built; path above.
+- Acceptance still requiring the user: stand far enough back that the whole T-pose fits inside the framing guide, then in practice mode try DELTA 5 times (confirm ALPHA does not fire), BETA 5 times, and GAMMA 5 times, and report how many of each were recognized. Also report whether the framing guide/warning helps with the MacBook webcam FOV.
+- Not yet played by a person

@@ -83,6 +83,8 @@ export interface ClassifierThresholds {
   alphaCrossExit: number;
   alphaBandInset: number;
   alphaBandSlack: number;
+  alphaWristDistanceEnter: number;
+  alphaWristDistanceExit: number;
 
   betaWristVerticalEnter: number;
   betaWristVerticalExit: number;
@@ -91,6 +93,8 @@ export interface ClassifierThresholds {
 
   gammaUpAboveNoseEnter: number;
   gammaUpAboveNoseExit: number;
+  gammaUpAboveShoulderEnter: number;
+  gammaUpAboveShoulderExit: number;
   gammaUpHorizontalEnter: number;
   gammaUpHorizontalExit: number;
   gammaDownBelowHipEnter: number;
@@ -109,8 +113,8 @@ export interface ClassifierThresholds {
 }
 
 export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
-  elbowStraightEnter: 160,
-  elbowStraightExit: 150,
+  elbowStraightEnter: 150,
+  elbowStraightExit: 140,
   elbowBentEnter: 120,
   elbowBentExit: 132,
 
@@ -118,18 +122,22 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
   alphaCrossExit: -0.02,
   alphaBandInset: 0.05,
   alphaBandSlack: 0.1,
+  alphaWristDistanceEnter: 0.5,
+  alphaWristDistanceExit: 0.45,
 
-  betaWristVerticalEnter: 0.35,
-  betaWristVerticalExit: 0.45,
-  betaWristHorizontalEnter: 1.1,
-  betaWristHorizontalExit: 1.0,
+  betaWristVerticalEnter: 0.45,
+  betaWristVerticalExit: 0.55,
+  betaWristHorizontalEnter: 1.0,
+  betaWristHorizontalExit: 0.9,
 
   gammaUpAboveNoseEnter: 0.05,
   gammaUpAboveNoseExit: -0.05,
-  gammaUpHorizontalEnter: 0.7,
-  gammaUpHorizontalExit: 0.6,
-  gammaDownBelowHipEnter: 0.05,
-  gammaDownBelowHipExit: -0.05,
+  gammaUpAboveShoulderEnter: 0.9,
+  gammaUpAboveShoulderExit: 0.8,
+  gammaUpHorizontalEnter: 0.55,
+  gammaUpHorizontalExit: 0.45,
+  gammaDownBelowHipEnter: 0.0,
+  gammaDownBelowHipExit: -0.1,
   gammaDownMidlineEnter: 0.5,
   gammaDownMidlineExit: 0.6,
 
@@ -139,8 +147,8 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
   deltaWristMidlineExit: 0.4,
   deltaBandInset: 0.05,
   deltaBandSlack: 0.1,
-  deltaOwnSideEnter: 0.02,
-  deltaOwnSideExit: -0.02,
+  deltaOwnSideEnter: -0.15,
+  deltaOwnSideExit: -0.25,
 };
 
 export function jointAngle(a: Vec2, b: Vec2, c: Vec2): number {
@@ -239,9 +247,17 @@ export function extractFeatures(
   };
 }
 
-/** Positive value means the wrist is crossed past the midline to the far side. */
-function crossedAmount(wristX: number, sideSign: number): number {
+/** Positive = crossed past the midline to the far side; negative = own side. */
+export function wristCrossingOffset(wristX: number, sideSign: number): number {
   return -(wristX * sideSign);
+}
+
+/** Wrist-to-wrist distance in shoulder-width units. */
+export function wristGap(features: PoseFeatures): number {
+  return Math.hypot(
+    features.left.wrist.x - features.right.wrist.x,
+    features.left.wrist.y - features.right.wrist.y,
+  );
 }
 
 /** Positive value means the wrist is on its own side of the midline. */
@@ -282,15 +298,23 @@ export function matchesPose(
   const t = thresholds;
 
   if (pose === 'ALPHA') {
-    const leftCrossed = crossedAmount(
+    // Hand separation comes first: gathered hands (DELTA) can overshoot the
+    // midline and otherwise look crossed, but an X always has separated hands.
+    const leftCrossed = wristCrossingOffset(
       features.left.wrist.x,
       features.leftSideSign,
     );
-    const rightCrossed = crossedAmount(
+    const rightCrossed = wristCrossingOffset(
       features.right.wrist.x,
       features.rightSideSign,
     );
     return (
+      atLeast(
+        wristGap(features),
+        t.alphaWristDistanceEnter,
+        t.alphaWristDistanceExit,
+        active,
+      ) &&
       atLeast(leftCrossed, t.alphaCrossEnter, t.alphaCrossExit, active) &&
       atLeast(rightCrossed, t.alphaCrossEnter, t.alphaCrossExit, active) &&
       inBand(
@@ -432,12 +456,20 @@ function gammaMatches(
   active: boolean,
   t: ClassifierThresholds,
 ): boolean {
-  // "Above nose" / "below hip" are expressed as positive amounts in the
-  // expected direction so the same atLeast hysteresis helper applies.
+  // "Above nose" / "above shoulder" / "below hip" are positive amounts in the
+  // expected direction so the same atLeast hysteresis helper applies. The up
+  // wrist passes if it clears the nose OR clears the shoulder line by enough.
   const upAboveNose = features.nose.y - up.wrist.y;
+  const upAboveShoulder = up.shoulder.y - up.wrist.y;
   const downBelowHip = down.wrist.y - features.hipY;
   return (
-    atLeast(upAboveNose, t.gammaUpAboveNoseEnter, t.gammaUpAboveNoseExit, active) &&
+    (atLeast(upAboveNose, t.gammaUpAboveNoseEnter, t.gammaUpAboveNoseExit, active) ||
+      atLeast(
+        upAboveShoulder,
+        t.gammaUpAboveShoulderEnter,
+        t.gammaUpAboveShoulderExit,
+        active,
+      )) &&
     atLeast(
       Math.abs(up.wrist.x),
       t.gammaUpHorizontalEnter,
@@ -534,11 +566,21 @@ function buildConditions(
     const bandFarMax = features.midTorsoY + 0.3;
     return [
       {
+        id: 'alpha-wrist-gap',
+        joint: 'Both wrists',
+        hint: 'Spread your wrists apart into an X.',
+        distance: softAbove(
+          wristGap(features),
+          t.alphaWristDistanceEnter + 0.3,
+          t.alphaWristDistanceEnter - 0.2,
+        ),
+      },
+      {
         id: 'alpha-left-cross',
         joint: 'Left wrist',
         hint: 'Cross your left wrist past the midline.',
         distance: softAbove(
-          crossedAmount(features.left.wrist.x, features.leftSideSign),
+          wristCrossingOffset(features.left.wrist.x, features.leftSideSign),
           t.alphaCrossEnter + 0.23,
           t.alphaCrossEnter - 0.22,
         ),
@@ -548,7 +590,7 @@ function buildConditions(
         joint: 'Right wrist',
         hint: 'Cross your right wrist past the midline.',
         distance: softAbove(
-          crossedAmount(features.right.wrist.x, features.rightSideSign),
+          wristCrossingOffset(features.right.wrist.x, features.rightSideSign),
           t.alphaCrossEnter + 0.23,
           t.alphaCrossEnter - 0.22,
         ),
@@ -726,21 +768,21 @@ function buildConditions(
     {
       id: 'delta-left-own-side',
       joint: 'Left wrist',
-      hint: 'Keep your left wrist on its own side of the midline.',
+      hint: 'Keep your left wrist from crossing too far past the midline.',
       distance: softAbove(
         ownSideAmount(features.left.wrist.x, features.leftSideSign),
-        0.15,
-        -0.2,
+        t.deltaOwnSideEnter + 0.25,
+        t.deltaOwnSideEnter - 0.25,
       ),
     },
     {
       id: 'delta-right-own-side',
       joint: 'Right wrist',
-      hint: 'Keep your right wrist on its own side of the midline.',
+      hint: 'Keep your right wrist from crossing too far past the midline.',
       distance: softAbove(
         ownSideAmount(features.right.wrist.x, features.rightSideSign),
-        0.15,
-        -0.2,
+        t.deltaOwnSideEnter + 0.25,
+        t.deltaOwnSideEnter - 0.25,
       ),
     },
   ];
@@ -759,7 +801,14 @@ function gammaConditions(
       id: `gamma-${upName.toLowerCase()}-up`,
       joint: `${upName} wrist`,
       hint: `Raise your ${upName.toLowerCase()} wrist above your head.`,
-      distance: softAbove(features.nose.y - up.wrist.y, 0.35, -0.25),
+      distance: Math.min(
+        softAbove(features.nose.y - up.wrist.y, 0.35, -0.25),
+        softAbove(
+          up.shoulder.y - up.wrist.y,
+          t.gammaUpAboveShoulderEnter + 0.2,
+          t.gammaUpAboveShoulderEnter - 0.35,
+        ),
+      ),
     },
     {
       id: `gamma-${upName.toLowerCase()}-out`,
@@ -775,7 +824,11 @@ function gammaConditions(
       id: `gamma-${downName.toLowerCase()}-down`,
       joint: `${downName} wrist`,
       hint: `Lower your ${downName.toLowerCase()} wrist toward your hip.`,
-      distance: softAbove(down.wrist.y - features.hipY, 0.35, -0.25),
+      distance: softAbove(
+        down.wrist.y - features.hipY,
+        t.gammaDownBelowHipEnter + 0.3,
+        t.gammaDownBelowHipEnter - 0.3,
+      ),
     },
     {
       id: `gamma-${downName.toLowerCase()}-midline`,
