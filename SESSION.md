@@ -62,36 +62,13 @@ Apply these whenever a block touches effects, sound, HUD, or pose feedback. DESI
 
 ## Roadmap (context only — do not build ahead)
 
-1. Camera + pose tracking + FPS measurement — code done (commit 2892279) but manual test FAILED on 2026-11-13: tracking crashed before the first frame (see Block 1 FIX below). Fix first, then re-measure FPS.
-2. 4-pose classifier + personal calibration + recognition-rate test mode
+1. Camera + pose tracking + FPS measurement — DONE (Block 1 + FIX, commits 2892279 / c137fa7). Measured on the user's MacBook Air M1 in Brave with a real camera: 5s-average FPS 60.2 at 640x480 and 58.4 at 1280x720; landmarks detected. Performance baseline confirmed — large headroom over the 25 FPS effects criterion.
+2. 4-pose classifier + personal calibration + recognition-rate test mode (this block)
 3. Core loop PoC: dummy target, Resonance -> Overload -> Release -> explosion, with the juice values and prototype sounds from the Design rules, PLUS a tweak panel (sliders for overload rise time, pose hold time, similarity threshold, hitstop frames, shake gain, particle burst size; values persisted in localStorage; toggled with the T key; hidden by default and always hidden in the TV profile) (fun gate)
 4. First real Nightmare enemy + full HUD (per HUD rules)
 5. Three enemy types + boss combo pattern
 6. Setup/start screens, story cards, final audio (Kenney CC0 first, per Sound rules) + CREDITS.md
 7. Phone/TV profiles, adaptive performance, public deployment, real-phone test
-
----
-
-## Block 1 FIX — pose tracking crash (do this before Block 2)
-
-Symptoms from the user's manual test on 2026-11-13 (screenshots provided by the user):
-- Landmark status stuck at "loading model..." forever; FPS current and 5s average never appear ("--").
-- Error banner: "Pose tracking stopped: Cannot read properties of undefined (reading 'activeTexture')".
-- The DELEGATE readout shows CPU, yet tracking never starts — so a half-initialized pipeline is being kept alive after a failure.
-- Switching capture to 1280x720 did NOT change the actual capture (readout still 640x480).
-- Test environment: MacBook Air M1 + Brave browser. Brave is Chromium-based, but its Shields / fingerprinting protection can restrict WebGL, which is consistent with the GPU-pipeline crash. The CPU default below stands — do not spend this fix trying to make GPU work under Brave.
-
-Required changes:
-1. Default delegate is CPU. Remove the GPU-first automatic attempt from the startup path — the 'activeTexture' crash comes from the Wasm runtime's WebGL/GPU pipeline. Keep GPU available only behind a manual "Try GPU" toggle; if GPU creation OR the first detection fails, close() that instance completely and create a fresh CPU instance. Never reuse a landmarker that has thrown.
-2. Landmarker lifecycle: exactly one live instance at a time. Wrap creation AND the first `detectForVideo` call in the same try/catch — creation can appear to succeed while the first inference is what crashes. On failure: close the instance, set an explicit error state, and show a "Retry" button that recreates everything from scratch.
-3. The loop must survive single-frame errors: catch errors per frame, count consecutive failures, and only declare tracking stopped after 30 consecutive failures. The camera preview must keep running even when tracking is stopped.
-4. Status text follows a real state machine: idle -> loading model -> running (only after the first successful detection returns landmarks) / error. "loading model..." must not persist after success or after failure.
-5. Resolution switch: stop the current tracks, close the landmarker, then re-acquire the camera AND recreate the landmarker at the new size. The CAPTURE readout must come from the live track's `getSettings()`, not from the requested value.
-6. FPS meter counts completed inference frames; it must show real numbers whenever tracking is running.
-
-Acceptance (report each in the log's handover checklist): with the CPU default, the skeleton appears and follows movement; FPS current + 5s average show real numbers at BOTH 640x480 and 1280x720; landmark status flips between detected / not detected when the user leaves the frame; switching resolution actually changes the CAPTURE readout; no error banner in the happy path; `npm run build` passes.
-
-Log a new "Block 1 FIX" entry in SESSION-LOG.md (English) with files changed, what the root cause was, build result, checklist, and a "user test" note asking for the two 5s-average FPS readings again.
 
 ---
 

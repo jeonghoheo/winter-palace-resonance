@@ -199,3 +199,264 @@ fieldset label {
   color: #ffd7de;
   line-height: 1.5;
 }
+
+.panel {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(16, 26, 46, 0.92);
+  border: 1px solid #1d2b45;
+}
+
+.panel-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #8ea0c4;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.practice-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.pose-label {
+  display: inline-block;
+  color: #e8eefc;
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.pose-label.recognized {
+  text-shadow: 0 0 20px currentColor;
+}
+
+.pose-label[data-pose="NO_POSE"] {
+  color: #8ea0c4;
+}
+
+.pose-label[data-pose="ALPHA"],
+.pose-name[data-pose="ALPHA"] {
+  color: #ffb37a;
+}
+
+.pose-label[data-pose="BETA"],
+.pose-name[data-pose="BETA"] {
+  color: #8ef1ff;
+}
+
+.pose-label[data-pose="GAMMA"],
+.pose-name[data-pose="GAMMA"] {
+  color: #c7a5ff;
+}
+
+.pose-label[data-pose="DELTA"],
+.pose-name[data-pose="DELTA"] {
+  color: #9dffcf;
+}
+
+.target-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pose-button {
+  appearance: none;
+  border: 1px solid #2b4166;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #101b2f;
+  color: #c8d8f2;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.pose-button:hover {
+  border-color: #3b5f8a;
+}
+
+.pose-button[aria-pressed="true"] {
+  border-color: #7ef0ff;
+  color: #04121c;
+  background: linear-gradient(180deg, #7ef0ff, #37c4e0);
+}
+
+.similarity {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.similarity-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.bar {
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid #2a3a5c;
+  border-radius: 999px;
+  background: #0a1424;
+}
+
+.bar.slim {
+  height: 8px;
+  margin-top: 8px;
+}
+
+.bar-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #37c4e0, #7ef0ff);
+  transition: width 80ms linear;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: #ffd479;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.calibration {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #22324d;
+}
+
+.calibration-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.badge {
+  padding: 3px 9px;
+  border: 1px solid #2b8fa5;
+  border-radius: 999px;
+  background: rgba(55, 196, 224, 0.16);
+  color: #8ef1ff;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+button.small {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.status-line {
+  margin: 8px 0 0;
+  color: #a9bada;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.test-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.test-head h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.test-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.inline-select {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #c3d2ea;
+  font-size: 14px;
+}
+
+select {
+  appearance: none;
+  padding: 8px 10px;
+  border: 1px solid #2b4166;
+  border-radius: 8px;
+  background: #0c1729;
+  color: #e8eefc;
+  font: inherit;
+  font-size: 13px;
+}
+
+.results {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+
+.results th,
+.results td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #22324d;
+  text-align: right;
+}
+
+.results th:first-child,
+.results td:first-child {
+  text-align: left;
+}
+
+.results th {
+  color: #8ea0c4;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.results tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pose-name {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 640px) {
+  .similarity {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .results th,
+  .results td {
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+}

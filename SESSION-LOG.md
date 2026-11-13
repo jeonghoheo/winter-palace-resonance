@@ -38,3 +38,40 @@ Handover checklist (Block 1 FIX):
 - Acceptance: skeleton appears and follows movement — Not assessed (requires a real camera with a person). FPS real at both resolutions — Built/verified headless, still needs the MacBook Air M1 reading. Landmark status flips when leaving the frame — Not assessed (requires a person; the no-person case correctly shows "not detected"). Resolution switch changes CAPTURE — Built/verified headless. No error banner in the happy path — Built/verified headless. `npm run build` passes — Built.
 - User test (manual): open the dev page in Brave, click Start, stand back so the upper body is visible, confirm the skeleton follows you and Landmarks says "detected", then walk out of frame and confirm it flips to "not detected". Record the 5-second average FPS at 640x480, switch to 1280x720, confirm CAPTURE really changes, and record the 5-second average again. If the WebGL error still appears in Brave, allow WebGL / turn off Shields for this localhost site, then press Retry.
 - Not yet played by a person
+
+## Block 2 — Pose classifier, calibration, recognition test (2026-11-13)
+- Built: a raw-landmark pose classifier for ALPHA/BETA/GAMMA/DELTA with a visibility gate, hysteresis, stickiness, 0.3s timestamp-based recognition, and a continuous similarity score with a single worst-joint hint; a practice UI with a large current-pose label, 4 target buttons, similarity number + bar, and the one-joint hint below 80%; a 1s-per-phase calibration flow (neutral + 4 poses) that stores per-pose median features in localStorage and adjusts thresholds within +/-20% of defaults; a recognition test mode (20 trials per pose, 3s timeout, timer pauses when landmarks are lost) with a per-pose results table and JSON download; and Vitest unit tests.
+- Side convention: features and conditions use RAW MediaPipe image coordinates (x right, y down; the anatomical left shoulder is on the +x side of the raw image when facing the camera). The selfie preview is mirrored only with CSS. Side-dependent checks use each shoulder's own sign, so ALPHA/DELTA crossing logic does not depend on the mirror.
+- Classifier file: `src/classifier.ts`. Features are shoulder-width (SW) normalized with the origin at mid-shoulder: elbow angles L/R (shoulder-elbow-wrist), wrist/elbow/shoulder positions, nose/chin/mid-torso/hip levels. Chin is approximated as nose + 0.1 SW; if hips are not visible the hip line falls back to shoulders + 1.6 SW. The gate requires nose, both shoulders, both elbows, and both wrists at visibility >= 0.5, otherwise NO_POSE.
+- Final default thresholds (constants at the top of `src/classifier.ts`; calibration may shift enter thresholds within +/-20%):
+  - Elbow straight: enter >=160 deg, exit >=150 deg. Elbow bent: enter <=120 deg, exit <=132 deg.
+  - ALPHA: crossing enter 0.02 SW past midline / exit -0.02; wrist band inset 0.05 SW / slack 0.10 SW; both elbows bent.
+  - BETA: wrist vertical enter 0.35 SW / exit 0.45; wrist horizontal enter 1.10 SW / exit 1.00; both elbows straight.
+  - GAMMA: up wrist enter 0.05 SW above nose / exit -0.05; up horizontal enter 0.70 SW / exit 0.60; down wrist enter 0.05 SW below hip / exit -0.05; down midline enter 0.50 SW / exit 0.60; opposite sides required.
+  - DELTA: wrist distance enter 0.35 SW / exit 0.45; midline enter 0.30 SW / exit 0.40; band inset 0.05 SW / slack 0.10; own-side enter 0.02 SW / exit -0.02.
+  - Recognition stability: 300 ms; landmark visibility gate: 0.5.
+- Similarity formula: each pose condition maps to a 0-1 distance (0 = comfortable target, 1 = far fallback), score = 100 * (1 - mean distance); the worst condition supplies the one-joint hint.
+- Files created: `src/classifier.ts`, `src/calibration.ts`, `src/testMode.ts`, `src/classifier.test.ts`, `src/calibration.test.ts`, `src/testMode.test.ts`, `docs/screens/block-2-start.png`. Files changed: `src/main.ts`, `index.html`, `src/style.css`, `package.json`, `package-lock.json`, `SESSION-LOG.md`.
+- Build: `npm run build` passes (TypeScript + Vite).
+- Tests: `npm test` passes — 3 files, 30 tests (angle math, SW normalization, each pose's enter/exit, hysteresis, priority/stickiness, 300 ms stability, similarity, calibration clamping, and test-mode timing/pause/timeout).
+- Run: `npm run dev`.
+- Screenshot check: `docs/screens/block-2-start.png` (initial pre-camera screen of the production build, 1280x720). Checked: no overflow or overlap, Start and all controls/stat chips visible without scrolling.
+- Additional headless verification: production build served with headless Chrome 157 and a fake camera fed a static T-pose photo. MediaPipe detected the person, the skeleton was drawn, current pose reported BETA (recognized), similarity was 96% for BETA vs 35% for ALPHA with a single left-wrist hint. Calibration completed and saved, the calibrated badge appeared, reloading restored it from localStorage, and Reset calibration restored defaults. A single-pose BETA test produced 20/20 successes (100%) at 323 ms average; the downloaded JSON contained all 20 trials and the summary. This used a static photo, not the user's real-camera session.
+
+Handover checklist (Block 2):
+1. `src/classifier.ts` pure functions over raw landmarks; elbow angles + SW-normalized wrist/elbow positions, mid-shoulder origin, y-down, side convention documented — Built; covered by unit tests.
+2. Visibility gate on nose, both shoulders, both elbows, both wrists (>=0.5) -> NO_POSE — Built; covered by unit tests.
+3. ALPHA/BETA/GAMMA/DELTA conditions with enter stricter than exit — Built; all four poses have synthetic enter/exit tests and hysteresis tests.
+4. Stickiness (active pose preferred, otherwise DELTA > ALPHA > GAMMA > BETA) — Built; covered by unit tests.
+5. RECOGNIZED only after the classifier output is stable for 0.3s, timestamp-based — Built; unit tested and observed live with the BETA fixture.
+6. Similarity 0-100 from normalized per-condition distances, with the worst condition/joint returned — Built; unit tested and visible in the UI.
+7. Practice UI: large current-pose label, 4 target buttons, big similarity % + bar, one-joint hint under 80%, FPS/resolution retained — Built; verified headless with a real-person image.
+8. Calibration: neutral 1s + four 1s pose holds, prompts/progress, per-pose median features in localStorage, threshold adjustment bounded to +/-20%, exposed "calibrated" state, Reset calibration — Built; end-to-end save/reload/reset verified headless. Real-person pose accuracy during calibration is Not assessed.
+9. Test mode: pose or All, 20 trials per pose, target shown, success on RECOGNIZED or 3s timeout, timer pauses when landmarks are lost, per-pose trials/successes/success %/average time, JSON download — Built; single-pose BETA test and JSON download verified live headless; All (80 trials), pause, and timeout paths covered by unit tests.
+10. Vitest added; pure-math/hysteresis tests — Built; `npm test` passes 30/30.
+11. `npm run build` passes — Built.
+12. `npm test` passes — Built.
+13. Production screenshot check at 1280x720 — Built; path above.
+- Acceptance still requiring the user: real-camera per-pose recognition rate (>=90% over 20 tries), real-person calibration quality, and real-camera ALPHA/GAMMA/DELTA behavior — Not assessed (only BETA was exercised with a real-person image; the other poses are covered by synthetic unit tests).
+- User test (manual): run calibration once (neutral, then hold each prompted pose for 1s), then run Test mode with All and 20 trials per pose. Report the per-pose success % and average recognition times shown in the results table (and optionally download the JSON). Also check that the one-joint hint matches the joint that feels most off.
+- Not yet played by a person

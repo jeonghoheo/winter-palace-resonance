@@ -9,7 +9,7 @@
     <div id="app">
       <header>
         <h1>Winter Palace: Resonance</h1>
-        <p class="subtitle">Block 1 — camera, pose tracking, FPS</p>
+        <p class="subtitle">Block 2 — pose classifier, calibration, recognition test</p>
       </header>
 
       <main>
@@ -65,6 +65,110 @@
             <span class="label">Delegate</span>
             <span id="delegate-status" class="value">--</span>
           </div>
+        </section>
+
+        <section id="practice-panel" class="panel" hidden>
+          <div class="practice-top">
+            <div class="now">
+              <span class="panel-label">Current pose</span>
+              <span id="current-pose" class="pose-label" data-pose="NO_POSE">NO_POSE</span>
+            </div>
+            <div class="targets">
+              <span class="panel-label">Practice target</span>
+              <div class="target-buttons" role="group" aria-label="Practice target pose">
+                <button type="button" class="pose-button" data-pose="ALPHA" aria-pressed="true">ALPHA</button>
+                <button type="button" class="pose-button" data-pose="BETA" aria-pressed="false">BETA</button>
+                <button type="button" class="pose-button" data-pose="GAMMA" aria-pressed="false">GAMMA</button>
+                <button type="button" class="pose-button" data-pose="DELTA" aria-pressed="false">DELTA</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="similarity">
+            <span id="similarity-value" class="similarity-value">--%</span>
+            <div id="similarity-bar" class="bar" role="progressbar" aria-label="Pose similarity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="similarity-fill" class="bar-fill"></div>
+            </div>
+          </div>
+          <p id="pose-hint" class="hint" hidden></p>
+
+          <div class="calibration">
+            <div class="calibration-head">
+              <span class="panel-label">Calibration</span>
+              <span id="calibration-badge" class="badge" hidden>calibrated</span>
+              <button id="calibrate" type="button" class="secondary small">Calibrate</button>
+              <button id="reset-calibration" type="button" class="secondary small">Reset calibration</button>
+            </div>
+            <p id="calibration-status" class="status-line">Not calibrated. Stand neutral, then hold each pose for 1s when prompted.</p>
+            <div class="bar slim" aria-hidden="true">
+              <div id="calibration-fill" class="bar-fill"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="test-panel" class="panel" hidden>
+          <div class="test-head">
+            <h2>Recognition test</h2>
+            <div class="test-controls">
+              <label class="inline-select">
+                Target
+                <select id="test-target">
+                  <option value="ALL">All poses (20 each)</option>
+                  <option value="ALPHA">ALPHA</option>
+                  <option value="BETA">BETA</option>
+                  <option value="GAMMA">GAMMA</option>
+                  <option value="DELTA">DELTA</option>
+                </select>
+              </label>
+              <button id="start-test" type="button">Start test</button>
+              <button id="download-results" type="button" class="secondary" disabled>Download JSON</button>
+            </div>
+          </div>
+          <p id="test-status" class="status-line">Each trial waits up to 3s for the target pose. The timer pauses when tracking is lost.</p>
+          <div class="bar slim" aria-hidden="true">
+            <div id="test-fill" class="bar-fill"></div>
+          </div>
+          <table class="results">
+            <thead>
+              <tr>
+                <th scope="col">Pose</th>
+                <th scope="col">Trials</th>
+                <th scope="col">Successes</th>
+                <th scope="col">Success %</th>
+                <th scope="col">Avg recognition</th>
+              </tr>
+            </thead>
+            <tbody id="results-body">
+              <tr data-pose="ALPHA">
+                <td class="pose-name" data-pose="ALPHA">ALPHA</td>
+                <td data-field="trials">—</td>
+                <td data-field="successes">—</td>
+                <td data-field="rate">—</td>
+                <td data-field="avg">—</td>
+              </tr>
+              <tr data-pose="BETA">
+                <td class="pose-name" data-pose="BETA">BETA</td>
+                <td data-field="trials">—</td>
+                <td data-field="successes">—</td>
+                <td data-field="rate">—</td>
+                <td data-field="avg">—</td>
+              </tr>
+              <tr data-pose="GAMMA">
+                <td class="pose-name" data-pose="GAMMA">GAMMA</td>
+                <td data-field="trials">—</td>
+                <td data-field="successes">—</td>
+                <td data-field="rate">—</td>
+                <td data-field="avg">—</td>
+              </tr>
+              <tr data-pose="DELTA">
+                <td class="pose-name" data-pose="DELTA">DELTA</td>
+                <td data-field="trials">—</td>
+                <td data-field="successes">—</td>
+                <td data-field="rate">—</td>
+                <td data-field="avg">—</td>
+              </tr>
+            </tbody>
+          </table>
         </section>
 
         <p id="error" class="error" role="alert" hidden></p>
